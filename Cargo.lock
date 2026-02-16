@@ -2692,7 +2692,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tui"
+name = "tui-player"
 version = "0.1.0"
 dependencies = [
  "crossterm",
