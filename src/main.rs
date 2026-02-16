@@ -677,6 +677,7 @@ struct App {
     samples: SampleBuf,
     stream: OutputStream,
     vis_mode: VisMode,
+    show_visualizer: bool,
     meta: TrackMeta,
     regions: LayoutRegions,
     lyrics: Option<LyricsResult>,
@@ -1097,6 +1098,7 @@ impl App {
             samples,
             stream,
             vis_mode: load_vis_mode(),
+            show_visualizer: true,
             meta: probe.meta,
             regions: LayoutRegions::default(),
             lyrics: None,
@@ -1178,13 +1180,26 @@ impl App {
     }
 }
 
+fn has_scope_tui() -> bool {
+    std::process::Command::new("which")
+        .arg("scope-tui")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
+    let scope_tui_installed = has_scope_tui();
     if args.len() < 2 {
         eprintln!("Usage: tui <music-file>");
-        eprintln!();
-        eprintln!("For external visualization, run in another terminal:");
-        eprintln!("  scope-tui file {PIPE_PATH}");
+        if scope_tui_installed {
+            eprintln!();
+            eprintln!("For external visualization, run in another terminal:");
+            eprintln!("  scope-tui file {PIPE_PATH}");
+        }
         std::process::exit(1);
     }
     let path = PathBuf::from(&args[1]);
@@ -1193,15 +1208,20 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     }
 
-    create_pipe();
+    if scope_tui_installed {
+        create_pipe();
+    }
 
     crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
     let mut terminal = ratatui::init();
     let mut app = App::new(&path);
+    app.show_visualizer = scope_tui_installed;
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
     crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
-    remove_pipe();
+    if scope_tui_installed {
+        remove_pipe();
+    }
     result
 }
 
@@ -1344,12 +1364,15 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let has_meta = !meta_parts.is_empty();
     let now_playing_height = if has_meta { 4 } else { 3 };
 
+    let show_middle = app.show_visualizer || app.lyrics_visible;
+    let show_hint = !app.show_visualizer;
     let chunks = Layout::vertical([
         Constraint::Length(now_playing_height),
-        Constraint::Min(8),
+        if show_middle { Constraint::Min(8) } else { Constraint::Length(0) },
         Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Length(3),
+        Constraint::Length(if show_hint { 1 } else { 0 }),
     ])
     .split(frame.area());
 
@@ -1376,91 +1399,110 @@ fn draw(frame: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Now Playing "));
     frame.render_widget(title, chunks[0]);
 
-    // Visualizer + lyrics side panel (collapsible)
-    let collapsed_w: u16 = 3; // border + 1 char + border
-    let split = Layout::horizontal(if app.lyrics_visible {
-        vec![Constraint::Percentage(50), Constraint::Percentage(50)]
-    } else {
-        vec![Constraint::Min(0), Constraint::Length(collapsed_w)]
-    })
-    .split(chunks[1]);
-    let vis_area = split[0];
-    let lyrics_rect = split[1];
-
-    app.regions.visualizer = vis_area;
-    app.regions.lyrics = lyrics_rect;
-    app.regions.lyrics_title = Rect::new(lyrics_rect.x, lyrics_rect.y, lyrics_rect.width, 1);
-
-    let vis_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(app.vis_mode.label());
-    match app.vis_mode {
-        VisMode::Oscilloscope => {
-            let w = OscilloscopeWidget::new(&app.samples, app.channels).block(vis_block);
-            frame.render_widget(w, vis_area);
-        }
-        VisMode::Vectorscope => {
-            let w = VectorscopeWidget::new(&app.samples, app.channels).block(vis_block);
-            frame.render_widget(w, vis_area);
-        }
-        VisMode::Spectroscope => {
-            let w = SpectroscopeWidget::new(&app.samples, app.channels).block(vis_block);
-            frame.render_widget(w, vis_area);
-        }
-    }
-
-    if app.lyrics_visible {
-        // Expanded lyrics panel
-        let lyrics_text = if app.lyrics_loading {
-            format!("Loading...\n\n{}", app.lyrics_url)
-        } else if let Some(ref lr) = app.lyrics {
-            lr.text.clone()
+    // Determine visualizer and lyrics areas within chunks[1]
+    if show_middle {
+        let collapsed_w: u16 = 3;
+        let (vis_area, lyrics_rect) = if app.show_visualizer && app.lyrics_visible {
+            // Both: split 50/50
+            let split = Layout::horizontal([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ]).split(chunks[1]);
+            (Some(split[0]), split[1])
+        } else if app.show_visualizer {
+            // Visualizer + collapsed lyrics tab
+            let split = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(collapsed_w),
+            ]).split(chunks[1]);
+            (Some(split[0]), split[1])
         } else {
-            "No lyrics found".to_string()
+            // No visualizer — lyrics gets full area
+            (None, chunks[1])
         };
 
-        let lyrics_lines: Vec<Line> = lyrics_text.lines().map(|l| Line::raw(l)).collect();
-        let total_lines = lyrics_lines.len();
-        let visible_height = lyrics_rect.height.saturating_sub(2) as usize;
-        let max_scroll = total_lines.saturating_sub(visible_height);
-        app.lyrics_scroll = app.lyrics_scroll.min(max_scroll);
-
-        let lyrics_title = if app.lyrics_url.is_empty() {
-            " Lyrics ".to_string()
+        if let Some(va) = vis_area {
+            app.regions.visualizer = va;
         } else {
-            format!(" Lyrics - {} ", app.lyrics_url)
-        };
-        let lyrics_widget = Paragraph::new(lyrics_lines)
-            .scroll((app.lyrics_scroll as u16, 0))
-            .style(Style::default().fg(Color::White))
-            .block(
+            app.regions.visualizer = Rect::default();
+        }
+        app.regions.lyrics = lyrics_rect;
+        app.regions.lyrics_title = Rect::new(lyrics_rect.x, lyrics_rect.y, lyrics_rect.width, 1);
+
+        // Render visualizer
+        if let Some(va) = vis_area {
+            let vis_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(app.vis_mode.label());
+            match app.vis_mode {
+                VisMode::Oscilloscope => {
+                    let w = OscilloscopeWidget::new(&app.samples, app.channels).block(vis_block);
+                    frame.render_widget(w, va);
+                }
+                VisMode::Vectorscope => {
+                    let w = VectorscopeWidget::new(&app.samples, app.channels).block(vis_block);
+                    frame.render_widget(w, va);
+                }
+                VisMode::Spectroscope => {
+                    let w = SpectroscopeWidget::new(&app.samples, app.channels).block(vis_block);
+                    frame.render_widget(w, va);
+                }
+            }
+        }
+
+        // Render lyrics panel
+        if app.lyrics_visible {
+            let lyrics_text = if app.lyrics_loading {
+                format!("Loading...\n\n{}", app.lyrics_url)
+            } else if let Some(ref lr) = app.lyrics {
+                lr.text.clone()
+            } else {
+                "No lyrics found".to_string()
+            };
+
+            let lyrics_lines: Vec<Line> = lyrics_text.lines().map(|l| Line::raw(l)).collect();
+            let total_lines = lyrics_lines.len();
+            let visible_height = lyrics_rect.height.saturating_sub(2) as usize;
+            let max_scroll = total_lines.saturating_sub(visible_height);
+            app.lyrics_scroll = app.lyrics_scroll.min(max_scroll);
+
+            let lyrics_title = if app.lyrics_url.is_empty() {
+                " Lyrics ".to_string()
+            } else {
+                format!(" Lyrics - {} ", app.lyrics_url)
+            };
+            let lyrics_widget = Paragraph::new(lyrics_lines)
+                .scroll((app.lyrics_scroll as u16, 0))
+                .style(Style::default().fg(Color::White))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .title(lyrics_title),
+                );
+            frame.render_widget(lyrics_widget, lyrics_rect);
+        } else if app.show_visualizer {
+            // Collapsed lyrics tab — only when visualizer is present
+            let inner_h = lyrics_rect.height.saturating_sub(2) as usize;
+            let label = "Lyrics";
+            let pad = inner_h.saturating_sub(label.len()) / 2;
+            let mut lines: Vec<Line> = Vec::with_capacity(inner_h);
+            for i in 0..inner_h {
+                let ch = if i >= pad && i < pad + label.len() {
+                    &label[i - pad..i - pad + 1]
+                } else {
+                    " "
+                };
+                lines.push(Line::styled(ch, Style::default().fg(Color::DarkGray)));
+            }
+            let collapsed = Paragraph::new(lines).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title(lyrics_title),
+                    .border_type(BorderType::Rounded),
             );
-        frame.render_widget(lyrics_widget, lyrics_rect);
-    } else {
-        // Collapsed lyrics tab — vertical "Lyrics" label
-        let inner_h = lyrics_rect.height.saturating_sub(2) as usize;
-        let label = "Lyrics";
-        let pad = inner_h.saturating_sub(label.len()) / 2;
-        let mut lines: Vec<Line> = Vec::with_capacity(inner_h);
-        for i in 0..inner_h {
-            let ch = if i >= pad && i < pad + label.len() {
-                &label[i - pad..i - pad + 1]
-            } else {
-                " "
-            };
-            lines.push(Line::styled(ch, Style::default().fg(Color::DarkGray)));
+            frame.render_widget(collapsed, lyrics_rect);
         }
-        let collapsed = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
-        );
-        frame.render_widget(collapsed, lyrics_rect);
     }
 
     // Progress
@@ -1494,20 +1536,39 @@ fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(vol_gauge, chunks[3]);
 
     // Controls
-    let help = Paragraph::new(Line::from(vec![
+    let mut help_spans = vec![
         Span::styled(" Space ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Play/Pause  "),
         Span::styled(" ←/→ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Seek ±5s  "),
         Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Volume  "),
-        Span::styled(" v ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-        Span::raw(" Vis Mode  "),
+    ];
+    if app.show_visualizer {
+        help_spans.extend([
+            Span::styled(" v ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" Vis Mode  "),
+        ]);
+    }
+    help_spans.extend([
         Span::styled(" l ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Lyrics  "),
+    ]);
+    help_spans.extend([
         Span::styled(" q ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Quit"),
-    ]))
+    ]);
+    let help = Paragraph::new(Line::from(help_spans))
     .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Controls "));
     frame.render_widget(help, chunks[4]);
+
+    // Hint to install scope-tui
+    if show_hint {
+        let hint = Line::from(vec![
+            Span::styled(" Run ", Style::default().fg(Color::DarkGray)),
+            Span::styled("cargo install scope-tui", Style::default().fg(Color::Yellow)),
+            Span::styled(" to enable audio visualizer", Style::default().fg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(hint), chunks[5]);
+    }
 }
