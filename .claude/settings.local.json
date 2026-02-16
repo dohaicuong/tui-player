@@ -21,7 +21,10 @@
       "Bash(git checkout:*)",
       "Bash(git merge:*)",
       "WebFetch(domain:lyricsovh.docs.apiary.io)",
-      "Bash(cargo tree:*)"
+      "Bash(cargo tree:*)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(cargo check:*)"
     ]
   }
 }

@@ -690,8 +690,10 @@ struct App {
     lyrics_url: String,
     lyrics_rx: Option<mpsc::Receiver<Option<LyricsResult>>>,
     album_art: Option<Vec<Vec<(u8, u8, u8)>>>,
+    art_url: Option<String>,
     art_rx: Option<mpsc::Receiver<Vec<Vec<(u8, u8, u8)>>>>,
-    discord_tx: Option<mpsc::Sender<DiscordActivity>>,
+    discord_tx: Option<mpsc::Sender<Option<DiscordActivity>>>,
+    discord_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl App {
@@ -1033,25 +1035,39 @@ fn remove_pipe() {
 struct DiscordActivity {
     title: String,
     artist: String,
+    album: String,
+    art_url: Option<String>,
     paused: bool,
     position_secs: u64,
     total_secs: Option<u64>,
 }
 
-fn spawn_discord_thread() -> Option<mpsc::Sender<DiscordActivity>> {
+fn spawn_discord_thread() -> Option<(mpsc::Sender<Option<DiscordActivity>>, thread::JoinHandle<()>)> {
     let app_id = env::var("DISCORD_APP_ID").ok()?;
-    let (tx, rx) = mpsc::channel::<DiscordActivity>();
-    thread::spawn(move || {
+    let (tx, rx) = mpsc::channel::<Option<DiscordActivity>>();
+    let handle = thread::spawn(move || {
         let mut client = DiscordIpcClient::new(&app_id);
         if client.connect().is_err() {
             return;
         }
-        while let Ok(act) = rx.recv() {
-            let state = if act.paused { "Paused" } else { "Playing" };
+        while let Ok(msg) = rx.recv() {
+            let Some(act) = msg else {
+                // None = clear presence and exit
+                let _ = client.clear_activity();
+                let _ = client.close();
+                return;
+            };
             let details = if act.artist.is_empty() {
                 act.title.clone()
             } else {
                 format!("{} — {}", act.title, act.artist)
+            };
+            let state = if act.album.is_empty() {
+                if act.paused { "Paused".to_string() } else { "Playing".to_string() }
+            } else if act.paused {
+                format!("{} (Paused)", act.album)
+            } else {
+                act.album.clone()
             };
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1061,7 +1077,7 @@ fn spawn_discord_thread() -> Option<mpsc::Sender<DiscordActivity>> {
 
             let mut payload = activity::Activity::new()
                 .activity_type(activity::ActivityType::Listening)
-                .state(state)
+                .state(&state)
                 .details(&details);
 
             let ts;
@@ -1076,21 +1092,32 @@ fn spawn_discord_thread() -> Option<mpsc::Sender<DiscordActivity>> {
                 payload = payload.timestamps(ts);
             }
 
+            let assets;
+            if let Some(ref url) = act.art_url {
+                assets = activity::Assets::new()
+                    .large_image(url)
+                    .large_text(&act.album);
+                payload = payload.assets(assets);
+            }
+
             let _ = client.set_activity(payload);
         }
+        let _ = client.clear_activity();
         let _ = client.close();
     });
-    Some(tx)
+    Some((tx, handle))
 }
 
-fn send_discord_update(tx: &mpsc::Sender<DiscordActivity>, app: &App) {
-    let _ = tx.send(DiscordActivity {
+fn send_discord_update(tx: &mpsc::Sender<Option<DiscordActivity>>, app: &App) {
+    let _ = tx.send(Some(DiscordActivity {
         title: app.meta.title.clone().unwrap_or_else(|| app.file_name.clone()),
         artist: app.meta.artist.clone().unwrap_or_default(),
+        album: app.meta.album.clone().unwrap_or_default(),
+        art_url: app.art_url.clone(),
         paused: app.paused,
         position_secs: app.position().as_secs(),
         total_secs: app.total_duration.map(|d| d.as_secs()),
-    });
+    }));
 }
 
 #[derive(Default)]
@@ -1220,7 +1247,7 @@ impl App {
             None
         };
 
-        let app = App {
+        let mut app = App {
             file_path: path.clone(),
             file_name,
             sink,
@@ -1243,9 +1270,16 @@ impl App {
             lyrics_url: String::new(),
             lyrics_rx,
             album_art: None,
+            art_url: None,
             art_rx: None,
-            discord_tx: spawn_discord_thread(),
+            discord_tx: None,
+            discord_thread: None,
         };
+
+        if let Some((tx, handle)) = spawn_discord_thread() {
+            app.discord_tx = Some(tx);
+            app.discord_thread = Some(handle);
+        }
 
         if let Some(ref tx) = app.discord_tx {
             send_discord_update(tx, &app);
@@ -1389,7 +1423,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                         app.lyrics_url = lr.url.clone();
                         // Spawn album art fetch if we got an art URL
                         if let Some(ref art_url) = lr.art_url {
+                            app.art_url = Some(art_url.clone());
                             app.art_rx = Some(spawn_art_fetch(art_url.clone(), ART_COLS, ART_ROWS));
+                            // Re-send Discord update now that we have the art URL
+                            if let Some(ref tx) = app.discord_tx {
+                                send_discord_update(tx, app);
+                            }
                         }
                         app.lyrics = Some(lr);
                         app.lyrics_loading = false;
@@ -1423,7 +1462,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') => break,
+                    KeyCode::Char('q') | KeyCode::Char('c')
+                        if key.code == KeyCode::Char('q')
+                            || key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        break;
+                    }
                     KeyCode::Char(' ') => app.toggle_pause(),
                     KeyCode::Up => app.volume_up(),
                     KeyCode::Down => app.volume_down(),
@@ -1498,6 +1542,14 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 
         if app.is_finished() && !app.paused {
             break;
+        }
+    }
+    // Clear Discord presence on exit and wait for the thread to finish
+    if let Some(tx) = app.discord_tx.take() {
+        let _ = tx.send(None);
+        drop(tx);
+        if let Some(handle) = app.discord_thread.take() {
+            let _ = handle.join();
         }
     }
     Ok(())
