@@ -24,7 +24,8 @@
       "Bash(cargo tree:*)",
       "WebFetch(domain:crates.io)",
       "WebFetch(domain:docs.rs)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(ldd:*)"
     ]
   }
 }
