@@ -1,7 +1,7 @@
 # tui-player Project Context
 
 ## Overview
-TUI music player written in Rust. Single-file architecture (~1720 lines in `src/main.rs`).
+TUI music player written in Rust. Multi-module architecture (~500 lines in main.rs, ~1250 across modules).
 
 ## Tech Stack
 - **Rust** (Edition 2024)
@@ -16,22 +16,20 @@ TUI music player written in Rust. Single-file architecture (~1720 lines in `src/
 - **libc** 0.2 — named pipe creation
 
 ## Key File Map
-- `src/main.rs` — entire application (monolithic)
-  - Lines 40-128: `PipedSource<S>` audio capture wrapper
-  - Lines 130-154: `VisMode` enum
-  - Lines 159-260: `OscilloscopeWidget`
-  - Lines 262-395: `VectorscopeWidget`
-  - Lines 397-550: `SpectroscopeWidget`
-  - Lines 552-657: `RoundedGauge` widget
-  - Lines 659-693: `App` struct
-  - Lines 700-740: Config I/O (persistence)
-  - Lines 742-939: Lyrics fetching (lyrics.ovh + Genius scraping)
-  - Lines 941-1002: Album art fetching + `AlbumArtWidget`
-  - Lines 1029-1112: `TrackMeta` + `probe_file()` metadata extraction
-  - Lines 1114-1251: `App` impl (playback, seeking, volume)
-  - Lines 1253-1296: `main()` entry point
-  - Lines 1298-1424: `run()` event loop
-  - Lines 1426-1720: `draw()` UI rendering
+- `src/main.rs` — App struct, PipedSource, event loop (`run()`), playback logic, config I/O (`config_dir`, load/save_volume, load/save_vis_mode, load/save_lyrics_visible), TrackMeta, probe_file(), draw() orchestration, SampleBuf type alias
+- `src/now_playing.rs` — Now Playing panel: AlbumArtWidget, fetch/spawn_art_fetch, draw_now_playing (vertical art panel), draw_now_playing_bar (horizontal compact bar), ART_ROWS/ART_COLS, ArtPixels type
+- `src/visualizer.rs` — VisMode enum, braille constants, OscilloscopeWidget, VectorscopeWidget, SpectroscopeWidget, draw_visualizer()
+- `src/lyrics.rs` — LyricsResult, url_encode, html_to_text/decode_entity, fetch_lyrics_ovh, fetch_lyrics_genius, spawn_lyrics_fetchers, draw_lyrics, draw_lyrics_collapsed
+- `src/gauge.rs` — RoundedGauge widget (shared by progress and volume)
+- `src/progress.rs` — draw_progress(), format_duration()
+- `src/volume.rs` — draw_volume()
+- `src/controls.rs` — draw_controls(), draw_scope_hint()
+
+## Cross-Module Dependencies
+- `gauge.rs` is used by `progress.rs` and `volume.rs` via `crate::gauge::RoundedGauge`
+- `visualizer.rs` uses `crate::SampleBuf` (pub type alias in main.rs)
+- `now_playing.rs` uses `crate::TrackMeta` (pub struct in main.rs)
+- `main.rs` re-exports from modules: `spawn_art_fetch`, `ArtPixels`, `ART_COLS`, `ART_ROWS`, `VisMode`, `spawn_lyrics_fetchers`, `LyricsResult`
 
 ## Implemented Features
 - Single-file playback (MP3/FLAC/OGG/WAV/AAC)
@@ -39,10 +37,18 @@ TUI music player written in Rust. Single-file architecture (~1720 lines in `src/
 - Lyrics fetching from lyrics.ovh + Genius web scraping
 - Album art from Genius search results (half-block rendering)
 - Mouse support (click seek, volume, play/pause, lyrics toggle, scroll)
-- Keyboard: Space=play/pause, arrows=seek/volume, v=vis mode, l=lyrics, j/k=scroll, q=quit
+- Keyboard: Space=play/pause, arrows=seek/volume, v=vis mode, l=lyrics, j/k=scroll, q/Ctrl+C=quit
 - Persistent config at `~/.config/tui-player/` (volume, vis_mode, lyrics_visible)
 - Optional scope-tui integration via named pipe `/tmp/tui-player.pipe`
 - Adaptive layout (compact vs vertical left panel when album art loads)
+
+## System Dependencies
+Only non-standard system library required: **ALSA** (for audio output via rodio).
+- **Arch/CachyOS**: `pacman -S alsa-lib`
+- **Debian/Ubuntu**: `apt install libasound2-dev`
+- **Fedora**: `dnf install alsa-lib-devel`
+
+All other crate dependencies (symphonia, rustfft, image, ureq, ratatui, crossterm) are pure Rust.
 
 ## Config Paths
 - `~/.config/tui-player/volume`
