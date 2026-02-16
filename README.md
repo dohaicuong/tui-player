@@ -14,6 +14,8 @@ A terminal music player written in Rust.
 
 ## System Dependencies
 
+### Linux
+
 ALSA is required for audio output:
 
 | Distro | Command |
@@ -21,6 +23,10 @@ ALSA is required for audio output:
 | Arch / CachyOS | `pacman -S alsa-lib` |
 | Debian / Ubuntu | `apt install libasound2-dev` |
 | Fedora | `dnf install alsa-lib-devel` |
+
+### macOS
+
+No extra dependencies — audio output uses CoreAudio, which is bundled with the OS.
 
 All other dependencies are pure Rust and handled by Cargo.
 

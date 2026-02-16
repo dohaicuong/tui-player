@@ -43,10 +43,9 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - Adaptive layout (compact vs vertical left panel when album art loads)
 
 ## System Dependencies
-Only non-standard system library required: **ALSA** (for audio output via rodio).
-- **Arch/CachyOS**: `pacman -S alsa-lib`
-- **Debian/Ubuntu**: `apt install libasound2-dev`
-- **Fedora**: `dnf install alsa-lib-devel`
+Audio output via rodio/cpal:
+- **Linux**: requires **ALSA** (`alsa-lib` / `libasound2-dev` / `alsa-lib-devel`)
+- **macOS**: uses **CoreAudio** (bundled with the OS, no extra packages needed)
 
 All other crate dependencies (symphonia, rustfft, image, ureq, ratatui, crossterm) are pure Rust.
 
