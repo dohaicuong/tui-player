@@ -29,6 +29,7 @@ use ratatui::{
 };
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use rustfft::{num_complex::Complex, FftPlanner};
+use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 
 const PIPE_PATH: &str = "/tmp/tui-player.pipe";
 
@@ -690,6 +691,7 @@ struct App {
     lyrics_rx: Option<mpsc::Receiver<Option<LyricsResult>>>,
     album_art: Option<Vec<Vec<(u8, u8, u8)>>>,
     art_rx: Option<mpsc::Receiver<Vec<Vec<(u8, u8, u8)>>>>,
+    discord_tx: Option<mpsc::Sender<DiscordActivity>>,
 }
 
 impl App {
@@ -1026,6 +1028,71 @@ fn remove_pipe() {
     let _ = fs::remove_file(PIPE_PATH);
 }
 
+// ── Discord Rich Presence ───────────────────────────────────────────
+
+struct DiscordActivity {
+    title: String,
+    artist: String,
+    paused: bool,
+    position_secs: u64,
+    total_secs: Option<u64>,
+}
+
+fn spawn_discord_thread() -> Option<mpsc::Sender<DiscordActivity>> {
+    let app_id = env::var("DISCORD_APP_ID").ok()?;
+    let (tx, rx) = mpsc::channel::<DiscordActivity>();
+    thread::spawn(move || {
+        let mut client = DiscordIpcClient::new(&app_id);
+        if client.connect().is_err() {
+            return;
+        }
+        while let Ok(act) = rx.recv() {
+            let state = if act.paused { "Paused" } else { "Playing" };
+            let details = if act.artist.is_empty() {
+                act.title.clone()
+            } else {
+                format!("{} — {}", act.title, act.artist)
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let start = now - act.position_secs as i64;
+
+            let mut payload = activity::Activity::new()
+                .activity_type(activity::ActivityType::Listening)
+                .state(state)
+                .details(&details);
+
+            let ts;
+            if !act.paused {
+                ts = if let Some(total) = act.total_secs {
+                    activity::Timestamps::new()
+                        .start(start)
+                        .end(start + total as i64)
+                } else {
+                    activity::Timestamps::new().start(start)
+                };
+                payload = payload.timestamps(ts);
+            }
+
+            let _ = client.set_activity(payload);
+        }
+        let _ = client.close();
+    });
+    Some(tx)
+}
+
+fn send_discord_update(tx: &mpsc::Sender<DiscordActivity>, app: &App) {
+    let _ = tx.send(DiscordActivity {
+        title: app.meta.title.clone().unwrap_or_else(|| app.file_name.clone()),
+        artist: app.meta.artist.clone().unwrap_or_default(),
+        paused: app.paused,
+        position_secs: app.position().as_secs(),
+        total_secs: app.total_duration.map(|d| d.as_secs()),
+    });
+}
+
 #[derive(Default)]
 struct TrackMeta {
     title: Option<String>,
@@ -1153,7 +1220,7 @@ impl App {
             None
         };
 
-        App {
+        let app = App {
             file_path: path.clone(),
             file_name,
             sink,
@@ -1177,7 +1244,13 @@ impl App {
             lyrics_rx,
             album_art: None,
             art_rx: None,
+            discord_tx: spawn_discord_thread(),
+        };
+
+        if let Some(ref tx) = app.discord_tx {
+            send_discord_update(tx, &app);
         }
+        app
     }
 
     fn toggle_pause(&mut self) {
@@ -1187,6 +1260,9 @@ impl App {
             self.sink.pause();
         }
         self.paused = !self.paused;
+        if let Some(ref tx) = self.discord_tx {
+            send_discord_update(tx, self);
+        }
     }
 
     fn volume_up(&mut self) {
@@ -1234,6 +1310,10 @@ impl App {
 
         if let Ok(mut sbuf) = self.samples.lock() {
             sbuf.clear();
+        }
+
+        if let Some(ref tx) = self.discord_tx {
+            send_discord_update(tx, self);
         }
     }
 
