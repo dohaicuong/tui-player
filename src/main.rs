@@ -101,6 +101,8 @@ struct RoundedGauge<'a> {
     ratio: f64,
     label: String,
     filled_color: Color,
+    overflow_at: Option<f64>,
+    overflow_color: Color,
     block: Option<Block<'a>>,
 }
 
@@ -110,8 +112,16 @@ impl<'a> RoundedGauge<'a> {
             ratio: ratio.clamp(0.0, 1.0),
             label,
             filled_color,
+            overflow_at: None,
+            overflow_color: Color::Red,
             block: None,
         }
+    }
+
+    fn overflow(mut self, threshold: f64, color: Color) -> Self {
+        self.overflow_at = Some(threshold);
+        self.overflow_color = color;
+        self
     }
 
     fn block(mut self, block: Block<'a>) -> Self {
@@ -136,10 +146,19 @@ impl Widget for RoundedGauge<'_> {
 
         let width = inner.width as usize;
         let filled = (self.ratio * width as f64).round() as usize;
+        let overflow_col = self
+            .overflow_at
+            .map(|t| (t * width as f64).round() as usize)
+            .unwrap_or(width);
         let y = inner.y;
 
         for col in 0..width {
             let x = inner.x + col as u16;
+            let fill_color = if col >= overflow_col {
+                self.overflow_color
+            } else {
+                self.filled_color
+            };
             let (ch, fg, bg) = if filled == 0 {
                 // Empty bar
                 if col == 0 {
@@ -152,11 +171,11 @@ impl Widget for RoundedGauge<'_> {
             } else if col < filled {
                 // Filled region
                 if col == 0 {
-                    ('╺', self.filled_color, Color::Reset)
+                    ('╺', fill_color, Color::Reset)
                 } else if col == filled - 1 && filled < width {
-                    ('╸', self.filled_color, Color::Reset)
+                    ('╸', fill_color, Color::Reset)
                 } else {
-                    ('━', self.filled_color, Color::Reset)
+                    ('━', fill_color, Color::Reset)
                 }
             } else {
                 // Unfilled region
@@ -302,6 +321,24 @@ impl App {
     }
 }
 
+fn config_dir() -> PathBuf {
+    let home = env::var("HOME").expect("HOME not set");
+    PathBuf::from(home).join(".config").join("tui-player")
+}
+
+fn load_volume() -> f32 {
+    fs::read_to_string(config_dir().join("volume"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(1.0)
+}
+
+fn save_volume(volume: f32) {
+    let dir = config_dir();
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("volume"), format!("{volume}"));
+}
+
 fn probe_duration(path: &PathBuf) -> Option<Duration> {
     let file = fs::File::open(path).ok()?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -337,7 +374,9 @@ impl App {
             .expect("failed to find audio device")
             .open_stream_or_fallback()
             .expect("failed to open audio stream");
+        let volume = load_volume();
         let sink = Sink::connect_new(stream.mixer());
+        sink.set_volume(volume);
 
         let samples: SampleBuf = Arc::new(Mutex::new(VecDeque::with_capacity(SAMPLE_BUF_SIZE)));
 
@@ -352,7 +391,7 @@ impl App {
             file_name,
             sink,
             paused: false,
-            volume: 1.0,
+            volume,
             total_duration,
             seek_base: Duration::ZERO,
             samples,
@@ -372,11 +411,13 @@ impl App {
     fn volume_up(&mut self) {
         self.volume = ((self.volume * 20.0).round() + 1.0).min(40.0) / 20.0;
         self.sink.set_volume(self.volume);
+        save_volume(self.volume);
     }
 
     fn volume_down(&mut self) {
         self.volume = ((self.volume * 20.0).round() - 1.0).max(0.0) / 20.0;
         self.sink.set_volume(self.volume);
+        save_volume(self.volume);
     }
 
     fn seek(&mut self, offset: i64) {
@@ -517,8 +558,9 @@ fn draw(frame: &mut Frame, app: &App) {
 
     // Volume
     let vol_pct = (app.volume * 100.0) as u16;
-    let vol_ratio = (app.volume.min(1.0)) as f64;
+    let vol_ratio = (app.volume / 2.0) as f64;
     let vol_gauge = RoundedGauge::new(vol_ratio, format!("{}%", vol_pct), Color::Green)
+        .overflow(0.5, Color::Red)
         .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Volume "));
     frame.render_widget(vol_gauge, chunks[3]);
 
