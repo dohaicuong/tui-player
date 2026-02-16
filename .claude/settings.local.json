@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo init:*)",
+      "Bash(cargo add:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo doc:*)",
+      "Bash(grep:*)",
+      "Bash(cargo run:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git -C /home/yuki/Desktop/personal/tui status)",
+      "Bash(git -C /home/yuki/Desktop/personal/tui diff src/main.rs)",
+      "Bash(git -C /home/yuki/Desktop/personal/tui log --oneline -3)",
+      "Bash(git -C /home/yuki/Desktop/personal/tui add:*)",
+      "Bash(git -C:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(scope-tui --help:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "WebFetch(domain:lyricsovh.docs.apiary.io)",
+      "Bash(cargo tree:*)"
+    ]
+  }
+}
