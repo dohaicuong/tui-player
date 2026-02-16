@@ -7,7 +7,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
     },
-    thread,
     time::Duration,
 };
 
@@ -20,23 +19,28 @@ use symphonia::core::{
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::{
-    buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
     DefaultTerminal, Frame,
 };
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
-use rustfft::{num_complex::Complex, FftPlanner};
-use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
+mod now_playing;
+use now_playing::{spawn_art_fetch, ArtPixels, ART_COLS, ART_ROWS};
+
+mod visualizer;
+use visualizer::VisMode;
+
+mod lyrics;
+use lyrics::{spawn_lyrics_fetchers, LyricsResult};
+
+mod gauge;
+mod progress;
+mod volume;
+mod controls;
 
 const PIPE_PATH: &str = "/tmp/tui-player.pipe";
 
-type SampleBuf = Arc<Mutex<VecDeque<f32>>>;
+pub type SampleBuf = Arc<Mutex<VecDeque<f32>>>;
 const SAMPLE_BUF_SIZE: usize = 8192;
-const ART_ROWS: u16 = 16;
-const ART_COLS: u16 = ART_ROWS * 2; // 2 cols per row for square aspect
 
 // Source wrapper that writes to pipe and captures samples for visualization
 struct PipedSource<S> {
@@ -128,535 +132,6 @@ where
     }
 }
 
-// Visualization modes
-#[derive(Clone, Copy, PartialEq)]
-enum VisMode {
-    Oscilloscope,
-    Vectorscope,
-    Spectroscope,
-}
-
-impl VisMode {
-    fn next(self) -> Self {
-        match self {
-            VisMode::Oscilloscope => VisMode::Vectorscope,
-            VisMode::Vectorscope => VisMode::Spectroscope,
-            VisMode::Spectroscope => VisMode::Oscilloscope,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            VisMode::Oscilloscope => " Oscilloscope ",
-            VisMode::Vectorscope => " Vectorscope ",
-            VisMode::Spectroscope => " Spectroscope ",
-        }
-    }
-}
-
-// Braille dot positions per character cell (2 wide x 4 tall):
-//   col0: bits 0,1,2,6  (top to bottom)
-//   col1: bits 3,4,5,7  (top to bottom)
-const BRAILLE_BASE: u32 = 0x2800;
-const BRAILLE_DOTS: [[u8; 4]; 2] = [
-    [0x01, 0x02, 0x04, 0x40], // left column
-    [0x08, 0x10, 0x20, 0x80], // right column
-];
-
-struct OscilloscopeWidget<'a> {
-    samples: &'a SampleBuf,
-    channels: u16,
-    block: Option<Block<'a>>,
-}
-
-impl<'a> OscilloscopeWidget<'a> {
-    fn new(samples: &'a SampleBuf, channels: u16) -> Self {
-        OscilloscopeWidget {
-            samples,
-            channels,
-            block: None,
-        }
-    }
-
-    fn block(mut self, block: Block<'a>) -> Self {
-        self.block = Some(block);
-        self
-    }
-}
-
-impl Widget for OscilloscopeWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let inner = if let Some(block) = self.block {
-            let inner = block.inner(area);
-            block.render(area, buf);
-            inner
-        } else {
-            area
-        };
-
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
-
-        let samples: Vec<f32> = if let Ok(s) = self.samples.lock() {
-            s.iter().copied().collect()
-        } else {
-            return;
-        };
-
-        if samples.is_empty() {
-            return;
-        }
-
-        let ch_count = self.channels.max(1) as usize;
-        let px_w = inner.width as usize * 2;
-        let px_h = inner.height as usize * 4;
-        let mid_y = px_h as f32 / 2.0;
-
-        let cols = inner.width as usize;
-        let rows = inner.height as usize;
-        let mut grid = vec![0u8; cols * rows];
-
-        // Draw center reference line
-        let center_py = px_h / 2;
-        let center_cy = center_py / 4;
-        let center_dy = center_py % 4;
-        if center_cy < rows {
-            for cx in 0..cols {
-                grid[center_cy * cols + cx] |=
-                    BRAILLE_DOTS[0][center_dy] | BRAILLE_DOTS[1][center_dy];
-            }
-        }
-        let ref_grid = grid.clone();
-
-        // Plot waveform (left channel)
-        let total_mono = samples.len() / ch_count;
-        for px_x in 0..px_w {
-            let sample_idx = (px_x * total_mono) / px_w;
-            let s = samples.get(sample_idx * ch_count).copied().unwrap_or(0.0);
-            let py = ((1.0 - s.clamp(-1.0, 1.0)) * mid_y).min(px_h as f32 - 1.0) as usize;
-
-            let cx = px_x / 2;
-            let cy = py / 4;
-            let dx = px_x % 2;
-            let dy = py % 4;
-
-            if cx < cols && cy < rows {
-                grid[cy * cols + cx] |= BRAILLE_DOTS[dx][dy];
-            }
-        }
-
-        for cy in 0..rows {
-            for cx in 0..cols {
-                let dots = grid[cy * cols + cx];
-                let ch = char::from_u32(BRAILLE_BASE + dots as u32).unwrap_or(' ');
-                let x = inner.x + cx as u16;
-                let y = inner.y + cy as u16;
-                let has_wave = (dots & !ref_grid[cy * cols + cx]) != 0;
-                let color = if has_wave { Color::Green } else { Color::DarkGray };
-                buf[(x, y)].set_char(ch).set_fg(color);
-            }
-        }
-    }
-}
-
-struct VectorscopeWidget<'a> {
-    samples: &'a SampleBuf,
-    channels: u16,
-    block: Option<Block<'a>>,
-}
-
-impl<'a> VectorscopeWidget<'a> {
-    fn new(samples: &'a SampleBuf, channels: u16) -> Self {
-        VectorscopeWidget {
-            samples,
-            channels,
-            block: None,
-        }
-    }
-
-    fn block(mut self, block: Block<'a>) -> Self {
-        self.block = Some(block);
-        self
-    }
-}
-
-impl Widget for VectorscopeWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let inner = if let Some(block) = self.block {
-            let inner = block.inner(area);
-            block.render(area, buf);
-            inner
-        } else {
-            area
-        };
-
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
-
-        let samples: Vec<f32> = if let Ok(s) = self.samples.lock() {
-            s.iter().copied().collect()
-        } else {
-            return;
-        };
-
-        if samples.is_empty() {
-            return;
-        }
-
-        let ch_count = self.channels.max(1) as usize;
-        let px_w = inner.width as usize * 2;
-        let px_h = inner.height as usize * 4;
-        let mid_x = px_w as f32 / 2.0;
-        let mid_y = px_h as f32 / 2.0;
-        // Use the smaller dimension so the plot is square
-        let radius = mid_x.min(mid_y);
-
-        let cols = inner.width as usize;
-        let rows = inner.height as usize;
-        let mut grid = vec![0u8; cols * rows];
-
-        // Draw crosshair reference lines (dimmed)
-        // Vertical center line
-        let center_px_x = px_w / 2;
-        for py in 0..px_h {
-            let cx = center_px_x / 2;
-            let dx = center_px_x % 2;
-            let cy = py / 4;
-            let dy = py % 4;
-            if cx < cols && cy < rows {
-                grid[cy * cols + cx] |= BRAILLE_DOTS[dx][dy];
-            }
-        }
-        // Horizontal center line
-        let center_py = px_h / 2;
-        for px_x in 0..px_w {
-            let cx = px_x / 2;
-            let dx = px_x % 2;
-            let cy = center_py / 4;
-            let dy = center_py % 4;
-            if cx < cols && cy < rows {
-                grid[cy * cols + cx] |= BRAILLE_DOTS[dx][dy];
-            }
-        }
-
-        // Track which cells have crosshair bits for coloring
-        let ref_grid = grid.clone();
-
-        // Plot L/R sample pairs using mid/side rotation:
-        //   X = (L - R) * 0.707  (side — stereo spread)
-        //   Y = (L + R) * 0.707  (mid — mono content)
-        // Mono = vertical line, stereo = wider spread
-        let num_frames = samples.len() / ch_count;
-        for i in 0..num_frames {
-            let left = samples[i * ch_count].clamp(-1.0, 1.0);
-            let right = if ch_count >= 2 {
-                samples[i * ch_count + 1].clamp(-1.0, 1.0)
-            } else {
-                left
-            };
-
-            let side = (left - right) * 0.707;
-            let mid = (left + right) * 0.707;
-
-            let px_x = (mid_x + side * radius).clamp(0.0, px_w as f32 - 1.0) as usize;
-            let py = (mid_y - mid * radius).clamp(0.0, px_h as f32 - 1.0) as usize;
-
-            let cx = px_x / 2;
-            let cy = py / 4;
-            let dx = px_x % 2;
-            let dy = py % 4;
-
-            if cx < cols && cy < rows {
-                grid[cy * cols + cx] |= BRAILLE_DOTS[dx][dy];
-            }
-        }
-
-        // Render to buffer
-        for cy in 0..rows {
-            for cx in 0..cols {
-                let dots = grid[cy * cols + cx];
-                let ch = char::from_u32(BRAILLE_BASE + dots as u32).unwrap_or(' ');
-                let x = inner.x + cx as u16;
-                let y = inner.y + cy as u16;
-
-                let has_wave = (dots & !ref_grid[cy * cols + cx]) != 0;
-
-                let color = if has_wave {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                };
-
-                buf[(x, y)].set_char(ch).set_fg(color);
-            }
-        }
-    }
-}
-
-struct SpectroscopeWidget<'a> {
-    samples: &'a SampleBuf,
-    channels: u16,
-    block: Option<Block<'a>>,
-}
-
-impl<'a> SpectroscopeWidget<'a> {
-    fn new(samples: &'a SampleBuf, channels: u16) -> Self {
-        SpectroscopeWidget {
-            samples,
-            channels,
-            block: None,
-        }
-    }
-
-    fn block(mut self, block: Block<'a>) -> Self {
-        self.block = Some(block);
-        self
-    }
-}
-
-impl Widget for SpectroscopeWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let inner = if let Some(block) = self.block {
-            let inner = block.inner(area);
-            block.render(area, buf);
-            inner
-        } else {
-            area
-        };
-
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
-
-        let samples: Vec<f32> = if let Ok(s) = self.samples.lock() {
-            s.iter().copied().collect()
-        } else {
-            return;
-        };
-
-        if samples.is_empty() {
-            return;
-        }
-
-        let ch_count = self.channels.max(1) as usize;
-        let px_h = inner.height as usize * 4;
-        let cols = inner.width as usize;
-        let rows = inner.height as usize;
-
-        // Mix down to mono
-        let num_frames = samples.len() / ch_count;
-        let mut mono: Vec<f32> = Vec::with_capacity(num_frames);
-        for i in 0..num_frames {
-            let mut sum = 0.0;
-            for c in 0..ch_count {
-                sum += samples[i * ch_count + c];
-            }
-            mono.push(sum / ch_count as f32);
-        }
-
-        // FFT — use power-of-2 window
-        let fft_size = mono.len().next_power_of_two().max(64);
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(fft_size);
-
-        let mut fft_input: Vec<Complex<f32>> = Vec::with_capacity(fft_size);
-        // Apply Hann window
-        let window_len = mono.len().min(fft_size);
-        for i in 0..window_len {
-            let w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (window_len as f32 - 1.0)).cos());
-            fft_input.push(Complex::new(mono[mono.len() - window_len + i] * w, 0.0));
-        }
-        // Zero-pad remainder
-        fft_input.resize(fft_size, Complex::new(0.0, 0.0));
-
-        fft.process(&mut fft_input);
-
-        // Only use first half (positive frequencies)
-        let num_bins = fft_size / 2;
-        let magnitudes: Vec<f32> = fft_input[..num_bins]
-            .iter()
-            .map(|c| c.norm() / fft_size as f32)
-            .collect();
-
-        // Map bins to columns using logarithmic scale
-        // Map frequency bins to screen columns with log scale
-        let mut col_mags = vec![0.0f32; cols];
-        if num_bins > 1 {
-            for col in 0..cols {
-                // Log scale: map column to frequency bin
-                let frac = col as f32 / cols as f32;
-                let bin_f = (num_bins as f32).powf(frac);
-                let bin = (bin_f as usize).clamp(1, num_bins - 1);
-                // Average nearby bins for smoother result
-                let lo = bin.saturating_sub(1);
-                let hi = (bin + 1).min(num_bins - 1);
-                let mut sum = 0.0;
-                let mut count = 0;
-                for b in lo..=hi {
-                    sum += magnitudes[b];
-                    count += 1;
-                }
-                col_mags[col] = sum / count as f32;
-            }
-        }
-
-        // Normalize magnitudes
-        let max_mag = col_mags.iter().cloned().fold(0.0f32, f32::max).max(0.001);
-
-        // Render using braille — each column bar grows upward from bottom
-        let mut grid = vec![0u8; cols * rows];
-
-        for col in 0..cols {
-            let height = (col_mags[col] / max_mag * px_h as f32).round() as usize;
-            let height = height.min(px_h);
-
-            // Fill from bottom up
-            for py in (px_h - height)..px_h {
-                let cx = col; // one braille column (left dot) per screen column
-                let cy = py / 4;
-                let dy = py % 4;
-                if cy < rows {
-                    grid[cy * cols + cx] |= BRAILLE_DOTS[0][dy] | BRAILLE_DOTS[1][dy];
-                }
-            }
-        }
-
-        for cy in 0..rows {
-            for cx in 0..cols {
-                let dots = grid[cy * cols + cx];
-                let ch = char::from_u32(BRAILLE_BASE + dots as u32).unwrap_or(' ');
-                let x = inner.x + cx as u16;
-                let y = inner.y + cy as u16;
-
-                let color = if dots != 0 {
-                    // Color gradient based on vertical position
-                    let frac = cy as f32 / rows as f32;
-                    if frac < 0.33 {
-                        Color::Red
-                    } else if frac < 0.66 {
-                        Color::Yellow
-                    } else {
-                        Color::Green
-                    }
-                } else {
-                    Color::DarkGray
-                };
-
-                buf[(x, y)].set_char(ch).set_fg(color);
-            }
-        }
-    }
-}
-
-// Rounded gauge widget
-struct RoundedGauge<'a> {
-    ratio: f64,
-    label: String,
-    filled_color: Color,
-    overflow_at: Option<f64>,
-    overflow_color: Color,
-    block: Option<Block<'a>>,
-}
-
-impl<'a> RoundedGauge<'a> {
-    fn new(ratio: f64, label: String, filled_color: Color) -> Self {
-        RoundedGauge {
-            ratio: ratio.clamp(0.0, 1.0),
-            label,
-            filled_color,
-            overflow_at: None,
-            overflow_color: Color::Red,
-            block: None,
-        }
-    }
-
-    fn overflow(mut self, threshold: f64, color: Color) -> Self {
-        self.overflow_at = Some(threshold);
-        self.overflow_color = color;
-        self
-    }
-
-    fn block(mut self, block: Block<'a>) -> Self {
-        self.block = Some(block);
-        self
-    }
-}
-
-impl Widget for RoundedGauge<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let inner = if let Some(block) = self.block {
-            let inner = block.inner(area);
-            block.render(area, buf);
-            inner
-        } else {
-            area
-        };
-
-        if inner.width < 2 || inner.height == 0 {
-            return;
-        }
-
-        let width = inner.width as usize;
-        let filled = (self.ratio * width as f64).round() as usize;
-        let overflow_col = self
-            .overflow_at
-            .map(|t| (t * width as f64).round() as usize)
-            .unwrap_or(width);
-        let y = inner.y;
-
-        for col in 0..width {
-            let x = inner.x + col as u16;
-            let fill_color = if col >= overflow_col {
-                self.overflow_color
-            } else {
-                self.filled_color
-            };
-            let (ch, fg, bg) = if filled == 0 {
-                if col == 0 {
-                    ('╶', Color::DarkGray, Color::Reset)
-                } else if col == width - 1 {
-                    ('╴', Color::DarkGray, Color::Reset)
-                } else {
-                    ('─', Color::DarkGray, Color::Reset)
-                }
-            } else if col < filled {
-                if col == 0 {
-                    ('╺', fill_color, Color::Reset)
-                } else if col == filled - 1 && filled < width {
-                    ('╸', fill_color, Color::Reset)
-                } else {
-                    ('━', fill_color, Color::Reset)
-                }
-            } else {
-                if col == width - 1 {
-                    ('╴', Color::DarkGray, Color::Reset)
-                } else {
-                    ('─', Color::DarkGray, Color::Reset)
-                }
-            };
-
-            buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
-        }
-
-        let label_len = self.label.len();
-        if label_len <= width {
-            let start = inner.x + (width - label_len) as u16 / 2;
-            for (i, ch) in self.label.chars().enumerate() {
-                let x = start + i as u16;
-                let col = (x - inner.x) as usize;
-                let fg = if col < filled {
-                    Color::White
-                } else {
-                    Color::Gray
-                };
-                buf[(x, y)].set_char(ch).set_fg(fg).set_bg(Color::Reset);
-            }
-        }
-    }
-}
-
 #[derive(Default, Clone)]
 struct LayoutRegions {
     now_playing: Rect,
@@ -689,11 +164,8 @@ struct App {
     lyrics_loading: bool,
     lyrics_url: String,
     lyrics_rx: Option<mpsc::Receiver<Option<LyricsResult>>>,
-    album_art: Option<Vec<Vec<(u8, u8, u8)>>>,
-    art_url: Option<String>,
-    art_rx: Option<mpsc::Receiver<Vec<Vec<(u8, u8, u8)>>>>,
-    discord_tx: Option<mpsc::Sender<Option<DiscordActivity>>>,
-    discord_thread: Option<thread::JoinHandle<()>>,
+    album_art: Option<ArtPixels>,
+    art_rx: Option<mpsc::Receiver<ArtPixels>>,
 }
 
 impl App {
@@ -743,268 +215,6 @@ fn save_vis_mode(mode: VisMode) {
     let _ = fs::write(dir.join("vis_mode"), name);
 }
 
-fn url_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
-}
-
-struct LyricsResult {
-    text: String,
-    url: String,
-    art_url: Option<String>,
-}
-
-fn fetch_lyrics_ovh(artist: &str, title: &str) -> Option<LyricsResult> {
-    let artist_enc = url_encode(artist);
-    let title_enc = url_encode(title);
-    let url = format!("https://api.lyrics.ovh/v1/{artist_enc}/{title_enc}");
-
-    let body = ureq::get(&url).call().ok()?.body_mut().read_to_string().ok()?;
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-    let text = json.get("lyrics")?.as_str()?.trim().to_string();
-    if text.is_empty() { None } else { Some(LyricsResult { text, url, art_url: None }) }
-}
-
-fn html_to_text(html: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    let mut tag_buf = String::new();
-    let mut entity_buf = String::new();
-    let mut in_entity = false;
-
-    for ch in html.chars() {
-        if in_entity {
-            entity_buf.push(ch);
-            if ch == ';' {
-                out.push_str(&decode_entity(&entity_buf));
-                entity_buf.clear();
-                in_entity = false;
-            } else if entity_buf.len() > 10 {
-                // Not a real entity, dump it
-                out.push_str(&entity_buf);
-                entity_buf.clear();
-                in_entity = false;
-            }
-        } else if in_tag {
-            tag_buf.push(ch);
-            if ch == '>' {
-                let lower = tag_buf.to_lowercase();
-                if lower.starts_with("<br") {
-                    out.push('\n');
-                }
-                tag_buf.clear();
-                in_tag = false;
-            }
-        } else if ch == '<' {
-            in_tag = true;
-            tag_buf.clear();
-            tag_buf.push(ch);
-        } else if ch == '&' {
-            in_entity = true;
-            entity_buf.clear();
-            entity_buf.push(ch);
-        } else {
-            out.push(ch);
-        }
-    }
-    // Flush leftover
-    if in_entity { out.push_str(&entity_buf); }
-    if in_tag { out.push_str(&tag_buf); }
-    out
-}
-
-fn decode_entity(entity: &str) -> String {
-    match entity {
-        "&amp;" => "&".into(),
-        "&lt;" => "<".into(),
-        "&gt;" => ">".into(),
-        "&quot;" => "\"".into(),
-        "&apos;" | "&#x27;" => "'".into(),
-        "&nbsp;" => " ".into(),
-        _ => {
-            // Numeric entities: &#123; or &#x1F;
-            let inner = &entity[2..entity.len() - 1]; // strip &# and ;
-            if let Some(hex) = inner.strip_prefix('x').or(inner.strip_prefix('X')) {
-                u32::from_str_radix(hex, 16)
-                    .ok()
-                    .and_then(char::from_u32)
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| entity.to_string())
-            } else if entity.starts_with("&#") {
-                inner.parse::<u32>()
-                    .ok()
-                    .and_then(char::from_u32)
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| entity.to_string())
-            } else {
-                entity.to_string()
-            }
-        }
-    }
-}
-
-fn fetch_lyrics_genius(artist: &str, title: &str) -> Option<LyricsResult> {
-    // Search Genius API
-    let query = if artist.is_empty() {
-        title.to_string()
-    } else {
-        format!("{artist} {title}")
-    };
-    let search_url = format!("https://genius.com/api/search?q={}", url_encode(&query));
-    let body = ureq::get(&search_url).call().ok()?.body_mut().read_to_string().ok()?;
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-
-    // Get first hit's URL and art
-    let hits = json.get("response")?.get("hits")?.as_array()?;
-    let result = hits.first()?.get("result")?;
-    let song_url = result.get("url")?.as_str()?.to_string();
-    let art_url = result.get("song_art_image_thumbnail_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // Fetch song page
-    let page = ureq::get(&song_url).call().ok()?.body_mut().read_to_string().ok()?;
-
-    // Extract lyrics from <div data-lyrics-container="true"> elements
-    let mut lyrics = String::new();
-    let marker = "data-lyrics-container=\"true\"";
-    let mut search_from = 0;
-    while let Some(pos) = page[search_from..].find(marker) {
-        let abs = search_from + pos;
-        let content_start = match page[abs..].find('>') {
-            Some(p) => abs + p + 1,
-            None => break,
-        };
-        // Find matching closing </div> handling nesting
-        let mut depth = 1;
-        let mut i = content_start;
-        while i < page.len() && depth > 0 {
-            if page[i..].starts_with("</div>") {
-                depth -= 1;
-                if depth == 0 { break; }
-                i += 6;
-            } else if page[i..].starts_with("<div") {
-                depth += 1;
-                i += 4;
-            } else {
-                i += page[i..].chars().next().map_or(1, |c| c.len_utf8());
-            }
-        }
-        let raw_html = &page[content_start..i];
-        // Convert HTML to plain text: replace <br> with newline, strip tags, decode entities
-        let text = html_to_text(raw_html);
-        if !text.is_empty() {
-            if !lyrics.is_empty() { lyrics.push('\n'); }
-            lyrics.push_str(&text);
-        }
-        search_from = i;
-    }
-
-    // Strip Genius metadata prefix from lyrics text
-    // Genius often prepends: "1 ContributorSong Title Lyrics[Verse 1]..."
-    let mut text = lyrics.trim().to_string();
-    if let Some(pos) = text.find(" Lyrics") {
-        let after = pos + " Lyrics".len();
-        // Only strip if it looks like a metadata prefix (before any lyrics content)
-        let before = &text[..pos];
-        if before.contains("Contributor") || !before.contains('\n') {
-            text = text[after..].trim().to_string();
-        }
-    }
-    if text.is_empty() { None } else { Some(LyricsResult { text, url: song_url, art_url }) }
-}
-
-fn spawn_lyrics_fetchers(artist: String, title: String) -> mpsc::Receiver<Option<LyricsResult>> {
-    let (tx, rx) = mpsc::channel();
-
-    // Spawn one thread per source — first Some result wins
-    let tx1 = tx.clone();
-    let a1 = artist.clone();
-    let t1 = title.clone();
-    thread::spawn(move || {
-        let _ = tx1.send(fetch_lyrics_ovh(&a1, &t1));
-    });
-
-    let tx2 = tx;
-    thread::spawn(move || {
-        let _ = tx2.send(fetch_lyrics_genius(&artist, &title));
-    });
-
-    rx
-}
-
-fn fetch_album_art(url: &str, cols: u16, rows: u16) -> Option<Vec<Vec<(u8, u8, u8)>>> {
-    let bytes = ureq::get(url).call().ok()?.body_mut().read_to_vec().ok()?;
-    let img = image::load_from_memory(&bytes).ok()?;
-    let px_w = cols as u32;
-    let px_h = (rows as u32) * 2; // half-block = 2 pixels per row
-    let resized = img.resize_exact(px_w, px_h, image::imageops::FilterType::Lanczos3);
-    let rgb = resized.to_rgb8();
-    let mut pixels = Vec::with_capacity(px_h as usize);
-    for y in 0..px_h {
-        let mut row = Vec::with_capacity(px_w as usize);
-        for x in 0..px_w {
-            let p = rgb.get_pixel(x, y);
-            row.push((p[0], p[1], p[2]));
-        }
-        pixels.push(row);
-    }
-    Some(pixels)
-}
-
-fn spawn_art_fetch(url: String, cols: u16, rows: u16) -> mpsc::Receiver<Vec<Vec<(u8, u8, u8)>>> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        if let Some(pixels) = fetch_album_art(&url, cols, rows) {
-            let _ = tx.send(pixels);
-        }
-    });
-    rx
-}
-
-struct AlbumArtWidget<'a> {
-    pixels: &'a [Vec<(u8, u8, u8)>],
-}
-
-impl<'a> AlbumArtWidget<'a> {
-    fn new(pixels: &'a [Vec<(u8, u8, u8)>]) -> Self {
-        AlbumArtWidget { pixels }
-    }
-}
-
-impl Widget for AlbumArtWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let pixel_rows = self.pixels.len();
-        let art_rows = pixel_rows / 2;
-        let art_cols = self.pixels.first().map(|r| r.len()).unwrap_or(0);
-        let rows = (area.height as usize).min(art_rows);
-        let cols = (area.width as usize).min(art_cols);
-        for cy in 0..rows {
-            let top_y = cy * 2;
-            let bot_y = top_y + 1;
-            for cx in 0..cols {
-                let top = self.pixels[top_y][cx];
-                let bot = self.pixels.get(bot_y).map(|r| r[cx]).unwrap_or(top);
-                let x = area.x + cx as u16;
-                let y = area.y + cy as u16;
-                buf[(x, y)]
-                    .set_char('▀')
-                    .set_fg(Color::Rgb(top.0, top.1, top.2))
-                    .set_bg(Color::Rgb(bot.0, bot.1, bot.2));
-            }
-        }
-    }
-}
-
 fn load_lyrics_visible() -> bool {
     fs::read_to_string(config_dir().join("lyrics_visible"))
         .ok()
@@ -1030,103 +240,13 @@ fn remove_pipe() {
     let _ = fs::remove_file(PIPE_PATH);
 }
 
-// ── Discord Rich Presence ───────────────────────────────────────────
-
-struct DiscordActivity {
-    title: String,
-    artist: String,
-    album: String,
-    art_url: Option<String>,
-    paused: bool,
-    position_secs: u64,
-    total_secs: Option<u64>,
-}
-
-fn spawn_discord_thread() -> Option<(mpsc::Sender<Option<DiscordActivity>>, thread::JoinHandle<()>)> {
-    let app_id = env::var("DISCORD_APP_ID").ok()?;
-    let (tx, rx) = mpsc::channel::<Option<DiscordActivity>>();
-    let handle = thread::spawn(move || {
-        let mut client = DiscordIpcClient::new(&app_id);
-        if client.connect().is_err() {
-            return;
-        }
-        while let Ok(msg) = rx.recv() {
-            let Some(act) = msg else {
-                // None = clear presence and exit
-                let _ = client.clear_activity();
-                let _ = client.close();
-                return;
-            };
-            let details = if act.artist.is_empty() {
-                act.title.clone()
-            } else {
-                format!("{} — {}", act.title, act.artist)
-            };
-            let state = if act.album.is_empty() {
-                if act.paused { "Paused".to_string() } else { "Playing".to_string() }
-            } else if act.paused {
-                format!("{} (Paused)", act.album)
-            } else {
-                act.album.clone()
-            };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let start = now - act.position_secs as i64;
-
-            let mut payload = activity::Activity::new()
-                .activity_type(activity::ActivityType::Listening)
-                .state(&state)
-                .details(&details);
-
-            let ts;
-            if !act.paused {
-                ts = if let Some(total) = act.total_secs {
-                    activity::Timestamps::new()
-                        .start(start)
-                        .end(start + total as i64)
-                } else {
-                    activity::Timestamps::new().start(start)
-                };
-                payload = payload.timestamps(ts);
-            }
-
-            let assets;
-            if let Some(ref url) = act.art_url {
-                assets = activity::Assets::new()
-                    .large_image(url)
-                    .large_text(&act.album);
-                payload = payload.assets(assets);
-            }
-
-            let _ = client.set_activity(payload);
-        }
-        let _ = client.clear_activity();
-        let _ = client.close();
-    });
-    Some((tx, handle))
-}
-
-fn send_discord_update(tx: &mpsc::Sender<Option<DiscordActivity>>, app: &App) {
-    let _ = tx.send(Some(DiscordActivity {
-        title: app.meta.title.clone().unwrap_or_else(|| app.file_name.clone()),
-        artist: app.meta.artist.clone().unwrap_or_default(),
-        album: app.meta.album.clone().unwrap_or_default(),
-        art_url: app.art_url.clone(),
-        paused: app.paused,
-        position_secs: app.position().as_secs(),
-        total_secs: app.total_duration.map(|d| d.as_secs()),
-    }));
-}
-
 #[derive(Default)]
-struct TrackMeta {
-    title: Option<String>,
-    artist: Option<String>,
-    album: Option<String>,
-    date: Option<String>,
-    genre: Option<String>,
+pub struct TrackMeta {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub date: Option<String>,
+    pub genre: Option<String>,
 }
 
 struct ProbeInfo {
@@ -1247,7 +367,7 @@ impl App {
             None
         };
 
-        let mut app = App {
+        App {
             file_path: path.clone(),
             file_name,
             sink,
@@ -1270,21 +390,8 @@ impl App {
             lyrics_url: String::new(),
             lyrics_rx,
             album_art: None,
-            art_url: None,
             art_rx: None,
-            discord_tx: None,
-            discord_thread: None,
-        };
-
-        if let Some((tx, handle)) = spawn_discord_thread() {
-            app.discord_tx = Some(tx);
-            app.discord_thread = Some(handle);
         }
-
-        if let Some(ref tx) = app.discord_tx {
-            send_discord_update(tx, &app);
-        }
-        app
     }
 
     fn toggle_pause(&mut self) {
@@ -1294,9 +401,6 @@ impl App {
             self.sink.pause();
         }
         self.paused = !self.paused;
-        if let Some(ref tx) = self.discord_tx {
-            send_discord_update(tx, self);
-        }
     }
 
     fn volume_up(&mut self) {
@@ -1344,10 +448,6 @@ impl App {
 
         if let Ok(mut sbuf) = self.samples.lock() {
             sbuf.clear();
-        }
-
-        if let Some(ref tx) = self.discord_tx {
-            send_discord_update(tx, self);
         }
     }
 
@@ -1423,12 +523,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                         app.lyrics_url = lr.url.clone();
                         // Spawn album art fetch if we got an art URL
                         if let Some(ref art_url) = lr.art_url {
-                            app.art_url = Some(art_url.clone());
                             app.art_rx = Some(spawn_art_fetch(art_url.clone(), ART_COLS, ART_ROWS));
-                            // Re-send Discord update now that we have the art URL
-                            if let Some(ref tx) = app.discord_tx {
-                                send_discord_update(tx, app);
-                            }
                         }
                         app.lyrics = Some(lr);
                         app.lyrics_loading = false;
@@ -1544,137 +639,40 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             break;
         }
     }
-    // Clear Discord presence on exit and wait for the thread to finish
-    if let Some(tx) = app.discord_tx.take() {
-        let _ = tx.send(None);
-        drop(tx);
-        if let Some(handle) = app.discord_thread.take() {
-            let _ = handle.join();
-        }
-    }
     Ok(())
 }
 
-fn format_duration(d: Duration) -> String {
-    let secs = d.as_secs();
-    format!("{}:{:02}", secs / 60, secs % 60)
-}
-
 fn draw(frame: &mut Frame, app: &mut App) {
-    // Build metadata line
-    let mut meta_parts: Vec<String> = Vec::new();
-    if let Some(ref artist) = app.meta.artist {
-        meta_parts.push(artist.clone());
-    }
-    if let Some(ref album) = app.meta.album {
-        meta_parts.push(album.clone());
-    }
-    if let Some(ref date) = app.meta.date {
-        meta_parts.push(date.clone());
-    }
-    if let Some(ref genre) = app.meta.genre {
-        meta_parts.push(genre.clone());
-    }
-    let has_meta = !meta_parts.is_empty();
-    let has_art = app.album_art.is_some();
+    let np = now_playing::draw_now_playing(
+        frame,
+        app.paused,
+        &app.file_name,
+        &app.meta,
+        app.album_art.as_ref(),
+    );
+    app.regions.now_playing = np.region;
 
     let show_middle = app.show_visualizer || app.lyrics_visible;
     let show_hint = !app.show_visualizer;
 
-    // When album art is available, Now Playing becomes a vertical left panel
-    let main_area = if has_art {
-        let top_split = Layout::horizontal([
-            Constraint::Length(ART_COLS + 2), // art + border
-            Constraint::Min(0),
-        ]).split(frame.area());
-
-        let np_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(" Now Playing ");
-        let np_inner = np_block.inner(top_split[0]);
-        frame.render_widget(np_block, top_split[0]);
-
-        // Build vertical content: status line, blank, art, blank, tags
-        let status = if app.paused { "Paused" } else { "Playing" };
-        let status_line = Line::from(vec![
-            Span::styled(format!(" {status} "), Style::default().fg(Color::Black).bg(Color::Cyan)),
-        ]);
-        let title_line = Line::from(Span::styled(&app.file_name, Style::default().fg(Color::White)));
-
-        // Render status + title at the top
-        let status_rect = Rect::new(np_inner.x, np_inner.y, np_inner.width, 1);
-        frame.render_widget(Paragraph::new(status_line), status_rect);
-        let title_rect = Rect::new(np_inner.x, np_inner.y + 1, np_inner.width, 1);
-        frame.render_widget(Paragraph::new(title_line), title_rect);
-
-        // Render album art below (after 1 blank line)
-        let art_y = np_inner.y + 3;
-        if let Some(ref pixels) = app.album_art {
-            let art_rect = Rect::new(np_inner.x, art_y, ART_COLS.min(np_inner.width), ART_ROWS.min(np_inner.height.saturating_sub(3)));
-            frame.render_widget(AlbumArtWidget::new(pixels), art_rect);
-        }
-
-        // Render tags below art
-        let tags_y = art_y + ART_ROWS + 1;
-        if has_meta && tags_y < np_inner.y + np_inner.height {
-            let tags_rect = Rect::new(np_inner.x, tags_y, np_inner.width, np_inner.y + np_inner.height - tags_y);
-            let mut tag_lines: Vec<Line> = Vec::new();
-            if let Some(ref artist) = app.meta.artist {
-                tag_lines.push(Line::from(Span::styled(artist.as_str(), Style::default().fg(Color::White))));
-            }
-            if let Some(ref album) = app.meta.album {
-                tag_lines.push(Line::from(Span::styled(album.as_str(), Style::default().fg(Color::DarkGray))));
-            }
-            if let Some(ref date) = app.meta.date {
-                tag_lines.push(Line::from(Span::styled(date.as_str(), Style::default().fg(Color::DarkGray))));
-            }
-            if let Some(ref genre) = app.meta.genre {
-                tag_lines.push(Line::from(Span::styled(genre.as_str(), Style::default().fg(Color::DarkGray))));
-            }
-            frame.render_widget(Paragraph::new(tag_lines), tags_rect);
-        }
-
-        app.regions.now_playing = top_split[0];
-        top_split[1]
-    } else {
-        frame.area()
-    };
-
-    // Right-side layout (or full layout when no art)
-    let now_playing_height: u16 = if !has_art { if has_meta { 4 } else { 3 } } else { 0 };
     let chunks = Layout::vertical([
-        Constraint::Length(now_playing_height),
+        Constraint::Length(np.row_height),
         if show_middle { Constraint::Min(8) } else { Constraint::Length(0) },
         Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Length(if show_hint { 1 } else { 0 }),
     ])
-    .split(main_area);
+    .split(np.main_area);
 
     app.regions.visualizer = chunks[1];
     app.regions.progress = chunks[2];
     app.regions.volume = chunks[3];
 
-    // Now playing (only when no album art — horizontal top bar)
-    if !has_art {
+    // Now playing bar (only when no album art — horizontal top bar)
+    if np.row_height > 0 {
         app.regions.now_playing = chunks[0];
-        let status = if app.paused { "Paused" } else { "Playing" };
-        let mut lines = vec![Line::from(vec![
-            Span::styled(format!(" {status} "), Style::default().fg(Color::Black).bg(Color::Cyan)),
-            Span::raw("  "),
-            Span::styled(&app.file_name, Style::default().fg(Color::White)),
-        ])];
-        if has_meta {
-            lines.push(Line::from(vec![
-                Span::raw("         "),
-                Span::styled(meta_parts.join("  ·  "), Style::default().fg(Color::DarkGray)),
-            ]));
-        }
-        let title = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Now Playing "));
-        frame.render_widget(title, chunks[0]);
+        now_playing::draw_now_playing_bar(frame, chunks[0], app.paused, &app.file_name, &app.meta);
     }
 
     // Determine visualizer and lyrics areas within chunks[1]
@@ -1709,144 +707,28 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
         // Render visualizer
         if let Some(va) = vis_area {
-            let vis_block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title(app.vis_mode.label());
-            match app.vis_mode {
-                VisMode::Oscilloscope => {
-                    let w = OscilloscopeWidget::new(&app.samples, app.channels).block(vis_block);
-                    frame.render_widget(w, va);
-                }
-                VisMode::Vectorscope => {
-                    let w = VectorscopeWidget::new(&app.samples, app.channels).block(vis_block);
-                    frame.render_widget(w, va);
-                }
-                VisMode::Spectroscope => {
-                    let w = SpectroscopeWidget::new(&app.samples, app.channels).block(vis_block);
-                    frame.render_widget(w, va);
-                }
-            }
+            visualizer::draw_visualizer(frame, va, app.vis_mode, &app.samples, app.channels);
         }
 
         // Render lyrics panel
         if app.lyrics_visible {
-            let lyrics_text = if app.lyrics_loading {
-                format!("Loading...\n\n{}", app.lyrics_url)
-            } else if let Some(ref lr) = app.lyrics {
-                lr.text.clone()
-            } else {
-                "No lyrics found".to_string()
-            };
-
-            let mut lyrics_lines: Vec<Line> = Vec::new();
-            if !app.lyrics_url.is_empty() {
-                lyrics_lines.push(Line::from(Span::styled(&app.lyrics_url, Style::default().fg(Color::DarkGray))));
-                lyrics_lines.push(Line::raw(""));
-            }
-            lyrics_lines.extend(lyrics_text.lines().map(|l| Line::raw(l)));
-            let total_lines = lyrics_lines.len();
-            let visible_height = lyrics_rect.height.saturating_sub(2) as usize;
-            let max_scroll = total_lines.saturating_sub(visible_height);
-            app.lyrics_scroll = app.lyrics_scroll.min(max_scroll);
-
-            let lyrics_widget = Paragraph::new(lyrics_lines)
-                .scroll((app.lyrics_scroll as u16, 0))
-                .style(Style::default().fg(Color::White))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title(" Lyrics "),
-                );
-            frame.render_widget(lyrics_widget, lyrics_rect);
-        } else if app.show_visualizer {
-            // Collapsed lyrics tab — only when visualizer is present
-            let inner_h = lyrics_rect.height.saturating_sub(2) as usize;
-            let label = "Lyrics";
-            let pad = inner_h.saturating_sub(label.len()) / 2;
-            let mut lines: Vec<Line> = Vec::with_capacity(inner_h);
-            for i in 0..inner_h {
-                let ch = if i >= pad && i < pad + label.len() {
-                    &label[i - pad..i - pad + 1]
-                } else {
-                    " "
-                };
-                lines.push(Line::styled(ch, Style::default().fg(Color::DarkGray)));
-            }
-            let collapsed = Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded),
+            lyrics::draw_lyrics(
+                frame,
+                lyrics_rect,
+                app.lyrics.as_ref(),
+                &app.lyrics_url,
+                app.lyrics_loading,
+                &mut app.lyrics_scroll,
             );
-            frame.render_widget(collapsed, lyrics_rect);
+        } else if app.show_visualizer {
+            lyrics::draw_lyrics_collapsed(frame, lyrics_rect);
         }
     }
 
-    // Progress
-    let elapsed = app.position();
-    let progress_label = match app.total_duration {
-        Some(total) if !total.is_zero() => {
-            format!("{} / {}", format_duration(elapsed), format_duration(total))
-        }
-        _ => format_duration(elapsed),
-    };
-    let ratio = app
-        .total_duration
-        .map(|t| {
-            if t.is_zero() {
-                0.0
-            } else {
-                (elapsed.as_secs_f64() / t.as_secs_f64()).min(1.0)
-            }
-        })
-        .unwrap_or(0.0);
-    let gauge = RoundedGauge::new(ratio, progress_label, Color::Cyan)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Progress "));
-    frame.render_widget(gauge, chunks[2]);
-
-    // Volume
-    let vol_pct = (app.volume * 100.0) as u16;
-    let vol_ratio = (app.volume / 2.0) as f64;
-    let vol_gauge = RoundedGauge::new(vol_ratio, format!("{}%", vol_pct), Color::Green)
-        .overflow(0.5, Color::Red)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Volume "));
-    frame.render_widget(vol_gauge, chunks[3]);
-
-    // Controls
-    let mut help_spans = vec![
-        Span::styled(" Space ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-        Span::raw(" Play/Pause  "),
-        Span::styled(" ←/→ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-        Span::raw(" Seek ±5s  "),
-        Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-        Span::raw(" Volume  "),
-    ];
-    if app.show_visualizer {
-        help_spans.extend([
-            Span::styled(" v ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-            Span::raw(" Vis Mode  "),
-        ]);
-    }
-    help_spans.extend([
-        Span::styled(" l ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-        Span::raw(" Lyrics  "),
-    ]);
-    help_spans.extend([
-        Span::styled(" q ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-        Span::raw(" Quit"),
-    ]);
-    let help = Paragraph::new(Line::from(help_spans))
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Controls "));
-    frame.render_widget(help, chunks[4]);
-
-    // Hint to install scope-tui
+    progress::draw_progress(frame, chunks[2], app.position(), app.total_duration);
+    volume::draw_volume(frame, chunks[3], app.volume);
+    controls::draw_controls(frame, chunks[4], app.show_visualizer);
     if show_hint {
-        let hint = Line::from(vec![
-            Span::styled(" Run ", Style::default().fg(Color::DarkGray)),
-            Span::styled("cargo install scope-tui", Style::default().fg(Color::Yellow)),
-            Span::styled(" to enable audio visualizer", Style::default().fg(Color::DarkGray)),
-        ]);
-        frame.render_widget(Paragraph::new(hint), chunks[5]);
+        controls::draw_scope_hint(frame, chunks[5]);
     }
 }
