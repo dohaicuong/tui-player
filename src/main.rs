@@ -1607,17 +1607,17 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 "No lyrics found".to_string()
             };
 
-            let lyrics_lines: Vec<Line> = lyrics_text.lines().map(|l| Line::raw(l)).collect();
+            let mut lyrics_lines: Vec<Line> = Vec::new();
+            if !app.lyrics_url.is_empty() {
+                lyrics_lines.push(Line::from(Span::styled(&app.lyrics_url, Style::default().fg(Color::DarkGray))));
+                lyrics_lines.push(Line::raw(""));
+            }
+            lyrics_lines.extend(lyrics_text.lines().map(|l| Line::raw(l)));
             let total_lines = lyrics_lines.len();
             let visible_height = lyrics_rect.height.saturating_sub(2) as usize;
             let max_scroll = total_lines.saturating_sub(visible_height);
             app.lyrics_scroll = app.lyrics_scroll.min(max_scroll);
 
-            let lyrics_title = if app.lyrics_url.is_empty() {
-                " Lyrics ".to_string()
-            } else {
-                format!(" Lyrics - {} ", app.lyrics_url)
-            };
             let lyrics_widget = Paragraph::new(lyrics_lines)
                 .scroll((app.lyrics_scroll as u16, 0))
                 .style(Style::default().fg(Color::White))
@@ -1625,7 +1625,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
-                        .title(lyrics_title),
+                        .title(" Lyrics "),
                 );
             frame.render_widget(lyrics_widget, lyrics_rect);
         } else if app.show_visualizer {
