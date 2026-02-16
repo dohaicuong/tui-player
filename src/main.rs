@@ -34,6 +34,8 @@ const PIPE_PATH: &str = "/tmp/tui-player.pipe";
 
 type SampleBuf = Arc<Mutex<VecDeque<f32>>>;
 const SAMPLE_BUF_SIZE: usize = 8192;
+const ART_ROWS: u16 = 16;
+const ART_COLS: u16 = ART_ROWS * 2; // 2 cols per row for square aspect
 
 // Source wrapper that writes to pipe and captures samples for visualization
 struct PipedSource<S> {
@@ -686,6 +688,8 @@ struct App {
     lyrics_loading: bool,
     lyrics_url: String,
     lyrics_rx: Option<mpsc::Receiver<Option<LyricsResult>>>,
+    album_art: Option<Vec<Vec<(u8, u8, u8)>>>,
+    art_rx: Option<mpsc::Receiver<Vec<Vec<(u8, u8, u8)>>>>,
 }
 
 impl App {
@@ -752,6 +756,7 @@ fn url_encode(s: &str) -> String {
 struct LyricsResult {
     text: String,
     url: String,
+    art_url: Option<String>,
 }
 
 fn fetch_lyrics_ovh(artist: &str, title: &str) -> Option<LyricsResult> {
@@ -762,7 +767,7 @@ fn fetch_lyrics_ovh(artist: &str, title: &str) -> Option<LyricsResult> {
     let body = ureq::get(&url).call().ok()?.body_mut().read_to_string().ok()?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
     let text = json.get("lyrics")?.as_str()?.trim().to_string();
-    if text.is_empty() { None } else { Some(LyricsResult { text, url }) }
+    if text.is_empty() { None } else { Some(LyricsResult { text, url, art_url: None }) }
 }
 
 fn html_to_text(html: &str) -> String {
@@ -854,13 +859,13 @@ fn fetch_lyrics_genius(artist: &str, title: &str) -> Option<LyricsResult> {
     let body = ureq::get(&search_url).call().ok()?.body_mut().read_to_string().ok()?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
 
-    // Get first hit's URL
+    // Get first hit's URL and art
     let hits = json.get("response")?.get("hits")?.as_array()?;
-    let song_url = hits.first()?
-        .get("result")?
-        .get("url")?
-        .as_str()?
-        .to_string();
+    let result = hits.first()?.get("result")?;
+    let song_url = result.get("url")?.as_str()?.to_string();
+    let art_url = result.get("song_art_image_thumbnail_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // Fetch song page
     let page = ureq::get(&song_url).call().ok()?.body_mut().read_to_string().ok()?;
@@ -911,7 +916,7 @@ fn fetch_lyrics_genius(artist: &str, title: &str) -> Option<LyricsResult> {
             text = text[after..].trim().to_string();
         }
     }
-    if text.is_empty() { None } else { Some(LyricsResult { text, url: song_url }) }
+    if text.is_empty() { None } else { Some(LyricsResult { text, url: song_url, art_url }) }
 }
 
 fn spawn_lyrics_fetchers(artist: String, title: String) -> mpsc::Receiver<Option<LyricsResult>> {
@@ -931,6 +936,69 @@ fn spawn_lyrics_fetchers(artist: String, title: String) -> mpsc::Receiver<Option
     });
 
     rx
+}
+
+fn fetch_album_art(url: &str, cols: u16, rows: u16) -> Option<Vec<Vec<(u8, u8, u8)>>> {
+    let bytes = ureq::get(url).call().ok()?.body_mut().read_to_vec().ok()?;
+    let img = image::load_from_memory(&bytes).ok()?;
+    let px_w = cols as u32;
+    let px_h = (rows as u32) * 2; // half-block = 2 pixels per row
+    let resized = img.resize_exact(px_w, px_h, image::imageops::FilterType::Lanczos3);
+    let rgb = resized.to_rgb8();
+    let mut pixels = Vec::with_capacity(px_h as usize);
+    for y in 0..px_h {
+        let mut row = Vec::with_capacity(px_w as usize);
+        for x in 0..px_w {
+            let p = rgb.get_pixel(x, y);
+            row.push((p[0], p[1], p[2]));
+        }
+        pixels.push(row);
+    }
+    Some(pixels)
+}
+
+fn spawn_art_fetch(url: String, cols: u16, rows: u16) -> mpsc::Receiver<Vec<Vec<(u8, u8, u8)>>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        if let Some(pixels) = fetch_album_art(&url, cols, rows) {
+            let _ = tx.send(pixels);
+        }
+    });
+    rx
+}
+
+struct AlbumArtWidget<'a> {
+    pixels: &'a [Vec<(u8, u8, u8)>],
+}
+
+impl<'a> AlbumArtWidget<'a> {
+    fn new(pixels: &'a [Vec<(u8, u8, u8)>]) -> Self {
+        AlbumArtWidget { pixels }
+    }
+}
+
+impl Widget for AlbumArtWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let pixel_rows = self.pixels.len();
+        let art_rows = pixel_rows / 2;
+        let art_cols = self.pixels.first().map(|r| r.len()).unwrap_or(0);
+        let rows = (area.height as usize).min(art_rows);
+        let cols = (area.width as usize).min(art_cols);
+        for cy in 0..rows {
+            let top_y = cy * 2;
+            let bot_y = top_y + 1;
+            for cx in 0..cols {
+                let top = self.pixels[top_y][cx];
+                let bot = self.pixels.get(bot_y).map(|r| r[cx]).unwrap_or(top);
+                let x = area.x + cx as u16;
+                let y = area.y + cy as u16;
+                buf[(x, y)]
+                    .set_char('▀')
+                    .set_fg(Color::Rgb(top.0, top.1, top.2))
+                    .set_bg(Color::Rgb(bot.0, bot.1, bot.2));
+            }
+        }
+    }
 }
 
 fn load_lyrics_visible() -> bool {
@@ -1107,6 +1175,8 @@ impl App {
             lyrics_loading: has_query,
             lyrics_url: String::new(),
             lyrics_rx,
+            album_art: None,
+            art_rx: None,
         }
     }
 
@@ -1237,6 +1307,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                 match rx.try_recv() {
                     Ok(Some(lr)) => {
                         app.lyrics_url = lr.url.clone();
+                        // Spawn album art fetch if we got an art URL
+                        if let Some(ref art_url) = lr.art_url {
+                            app.art_rx = Some(spawn_art_fetch(art_url.clone(), ART_COLS, ART_ROWS));
+                        }
                         app.lyrics = Some(lr);
                         app.lyrics_loading = false;
                         app.lyrics_rx = None;
@@ -1253,6 +1327,14 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                         break;
                     }
                 }
+            }
+        }
+
+        // Poll album art download
+        if let Some(ref rx) = app.art_rx {
+            if let Ok(pixels) = rx.try_recv() {
+                app.album_art = Some(pixels);
+                app.art_rx = None;
             }
         }
 
@@ -1362,7 +1444,24 @@ fn draw(frame: &mut Frame, app: &mut App) {
         meta_parts.push(genre.clone());
     }
     let has_meta = !meta_parts.is_empty();
-    let now_playing_height = if has_meta { 4 } else { 3 };
+    let has_art = app.album_art.is_some();
+    let now_playing_height: u16 = if has_meta { 4 } else { 3 };
+
+    // When album art is available, split frame: left = art, right = rest
+    let main_area = if has_art {
+        let top_split = Layout::horizontal([
+            Constraint::Length(ART_COLS),
+            Constraint::Min(0),
+        ]).split(frame.area());
+
+        if let Some(ref pixels) = app.album_art {
+            frame.render_widget(AlbumArtWidget::new(pixels), top_split[0]);
+        }
+
+        top_split[1]
+    } else {
+        frame.area()
+    };
 
     let show_middle = app.show_visualizer || app.lyrics_visible;
     let show_hint = !app.show_visualizer;
@@ -1374,7 +1473,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(3),
         Constraint::Length(if show_hint { 1 } else { 0 }),
     ])
-    .split(frame.area());
+    .split(main_area);
 
     // Store regions for mouse hit-testing
     app.regions.now_playing = chunks[0];
