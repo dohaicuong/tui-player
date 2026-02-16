@@ -1445,26 +1445,72 @@ fn draw(frame: &mut Frame, app: &mut App) {
     }
     let has_meta = !meta_parts.is_empty();
     let has_art = app.album_art.is_some();
-    let now_playing_height: u16 = if has_meta { 4 } else { 3 };
 
-    // When album art is available, split frame: left = art, right = rest
+    let show_middle = app.show_visualizer || app.lyrics_visible;
+    let show_hint = !app.show_visualizer;
+
+    // When album art is available, Now Playing becomes a vertical left panel
     let main_area = if has_art {
         let top_split = Layout::horizontal([
-            Constraint::Length(ART_COLS),
+            Constraint::Length(ART_COLS + 2), // art + border
             Constraint::Min(0),
         ]).split(frame.area());
 
+        let np_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Now Playing ");
+        let np_inner = np_block.inner(top_split[0]);
+        frame.render_widget(np_block, top_split[0]);
+
+        // Build vertical content: status line, blank, art, blank, tags
+        let status = if app.paused { "Paused" } else { "Playing" };
+        let status_line = Line::from(vec![
+            Span::styled(format!(" {status} "), Style::default().fg(Color::Black).bg(Color::Cyan)),
+        ]);
+        let title_line = Line::from(Span::styled(&app.file_name, Style::default().fg(Color::White)));
+
+        // Render status + title at the top
+        let status_rect = Rect::new(np_inner.x, np_inner.y, np_inner.width, 1);
+        frame.render_widget(Paragraph::new(status_line), status_rect);
+        let title_rect = Rect::new(np_inner.x, np_inner.y + 1, np_inner.width, 1);
+        frame.render_widget(Paragraph::new(title_line), title_rect);
+
+        // Render album art below (after 1 blank line)
+        let art_y = np_inner.y + 3;
         if let Some(ref pixels) = app.album_art {
-            frame.render_widget(AlbumArtWidget::new(pixels), top_split[0]);
+            let art_rect = Rect::new(np_inner.x, art_y, ART_COLS.min(np_inner.width), ART_ROWS.min(np_inner.height.saturating_sub(3)));
+            frame.render_widget(AlbumArtWidget::new(pixels), art_rect);
         }
 
+        // Render tags below art
+        let tags_y = art_y + ART_ROWS + 1;
+        if has_meta && tags_y < np_inner.y + np_inner.height {
+            let tags_rect = Rect::new(np_inner.x, tags_y, np_inner.width, np_inner.y + np_inner.height - tags_y);
+            let mut tag_lines: Vec<Line> = Vec::new();
+            if let Some(ref artist) = app.meta.artist {
+                tag_lines.push(Line::from(Span::styled(artist.as_str(), Style::default().fg(Color::White))));
+            }
+            if let Some(ref album) = app.meta.album {
+                tag_lines.push(Line::from(Span::styled(album.as_str(), Style::default().fg(Color::DarkGray))));
+            }
+            if let Some(ref date) = app.meta.date {
+                tag_lines.push(Line::from(Span::styled(date.as_str(), Style::default().fg(Color::DarkGray))));
+            }
+            if let Some(ref genre) = app.meta.genre {
+                tag_lines.push(Line::from(Span::styled(genre.as_str(), Style::default().fg(Color::DarkGray))));
+            }
+            frame.render_widget(Paragraph::new(tag_lines), tags_rect);
+        }
+
+        app.regions.now_playing = top_split[0];
         top_split[1]
     } else {
         frame.area()
     };
 
-    let show_middle = app.show_visualizer || app.lyrics_visible;
-    let show_hint = !app.show_visualizer;
+    // Right-side layout (or full layout when no art)
+    let now_playing_height: u16 = if !has_art { if has_meta { 4 } else { 3 } } else { 0 };
     let chunks = Layout::vertical([
         Constraint::Length(now_playing_height),
         if show_middle { Constraint::Min(8) } else { Constraint::Length(0) },
@@ -1475,28 +1521,29 @@ fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .split(main_area);
 
-    // Store regions for mouse hit-testing
-    app.regions.now_playing = chunks[0];
     app.regions.visualizer = chunks[1];
     app.regions.progress = chunks[2];
     app.regions.volume = chunks[3];
 
-    // Now playing
-    let status = if app.paused { "Paused" } else { "Playing" };
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!(" {status} "), Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::raw("  "),
-        Span::styled(&app.file_name, Style::default().fg(Color::White)),
-    ])];
-    if has_meta {
-        lines.push(Line::from(vec![
-            Span::raw("         "),
-            Span::styled(meta_parts.join("  ·  "), Style::default().fg(Color::DarkGray)),
-        ]));
+    // Now playing (only when no album art — horizontal top bar)
+    if !has_art {
+        app.regions.now_playing = chunks[0];
+        let status = if app.paused { "Paused" } else { "Playing" };
+        let mut lines = vec![Line::from(vec![
+            Span::styled(format!(" {status} "), Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled(&app.file_name, Style::default().fg(Color::White)),
+        ])];
+        if has_meta {
+            lines.push(Line::from(vec![
+                Span::raw("         "),
+                Span::styled(meta_parts.join("  ·  "), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+        let title = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Now Playing "));
+        frame.render_widget(title, chunks[0]);
     }
-    let title = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Now Playing "));
-    frame.render_widget(title, chunks[0]);
 
     // Determine visualizer and lyrics areas within chunks[1]
     if show_middle {
