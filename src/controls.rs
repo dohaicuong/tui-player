@@ -13,6 +13,7 @@ pub fn draw_controls(
     has_browser: bool,
     shuffle: bool,
     repeat_label: &str,
+    crossfade_label: &str,
 ) {
     let mut help_spans = vec![
         Span::styled(" Space ", Style::default().fg(Color::Black).bg(Color::Yellow)),
@@ -49,6 +50,15 @@ pub fn draw_controls(
             Span::styled(
                 format!(" {repeat_label}  "),
                 Style::default().fg(if repeat_label != "Repeat Off" {
+                    Color::Cyan
+                } else {
+                    Color::Reset
+                }),
+            ),
+            Span::styled(" c ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                format!(" Crossfade {crossfade_label}  "),
+                Style::default().fg(if crossfade_label != "Off" {
                     Color::Cyan
                 } else {
                     Color::Reset

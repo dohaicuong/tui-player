@@ -11,12 +11,12 @@ A terminal music player written in Rust.
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll, hover tooltips on seek/volume/EQ)
 - File browser with tree navigation (press `f`) — accepts directories as input, fuzzy search with `/`
 - Shuffle and repeat modes (Off / All / One)
-- Gapless playback with pre-buffered next track
+- Gapless playback with pre-buffered next track (or crossfade with `c` key — Off / 2s / 5s / 8s)
 - ReplayGain volume normalization (reads track/album gain tags)
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic equalizer with presets (press `e`) — real-time biquad filtering
 - Waveform preview on seek bar (progressive background scan, block character rendering)
-- Persistent settings (volume, visualizer mode, lyrics visibility, EQ)
+- Persistent settings (volume, visualizer mode, lyrics visibility, EQ, crossfade)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
 
 ## System Dependencies
@@ -64,6 +64,7 @@ tui-player <music-file-or-directory>
 | `N` | Previous track |
 | `s` | Toggle shuffle |
 | `r` | Cycle repeat (Off / All / One) |
+| `c` | Cycle crossfade (Off / 2s / 5s / 8s) |
 | `j` / `k` | Scroll lyrics |
 | `q` / `Ctrl+C` | Quit |
 
@@ -90,3 +91,4 @@ Settings are persisted in `~/.config/tui-player/`:
 - `eq` — equalizer state (enabled, preset, per-band gains)
 - `repeat_mode` — repeat mode (off, all, one)
 - `shuffle` — shuffle on/off
+- `crossfade` — crossfade duration in seconds (0 = off)

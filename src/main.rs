@@ -246,6 +246,19 @@ struct QueuedTrack {
     finished: Arc<AtomicBool>,
 }
 
+struct CrossfadeState {
+    sink: Sink,
+    path: PathBuf,
+    file_name: String,
+    meta: TrackMeta,
+    duration: Option<Duration>,
+    channels: u16,
+    normalize_gain: f32,
+    finished: Arc<AtomicBool>,
+}
+
+const CROSSFADE_OPTIONS: [f32; 4] = [0.0, 2.0, 5.0, 8.0];
+
 const WAVEFORM_BINS: usize = 1024;
 type SharedWaveform = Arc<Mutex<Vec<f32>>>;
 
@@ -353,6 +366,8 @@ struct App {
     volume_hover_col: Option<u16>,
     eq_hover_band: Option<usize>,
     waveform: SharedWaveform,
+    crossfade_duration: f32,
+    crossfade: Option<CrossfadeState>,
 }
 
 impl App {
@@ -448,6 +463,19 @@ fn save_shuffle(shuffle: bool) {
     let dir = config_dir();
     let _ = fs::create_dir_all(&dir);
     let _ = fs::write(dir.join("shuffle"), if shuffle { "true" } else { "false" });
+}
+
+fn load_crossfade() -> f32 {
+    fs::read_to_string(config_dir().join("crossfade"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0.0)
+}
+
+fn save_crossfade(duration: f32) {
+    let dir = config_dir();
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("crossfade"), format!("{duration}"));
 }
 
 fn create_pipe() {
@@ -690,6 +718,8 @@ impl App {
                 }
                 wf
             },
+            crossfade_duration: load_crossfade(),
+            crossfade: None,
         }
     }
 
@@ -756,10 +786,15 @@ impl App {
             volume_hover_col: None,
             eq_hover_band: None,
             waveform: Arc::new(Mutex::new(Vec::new())),
+            crossfade_duration: load_crossfade(),
+            crossfade: None,
         }
     }
 
     fn switch_track(&mut self, path: &PathBuf) {
+        if let Some(cf) = self.crossfade.take() {
+            cf.sink.stop();
+        }
         self.sink.stop();
         self.queued_track = None;
 
@@ -834,8 +869,14 @@ impl App {
     fn toggle_pause(&mut self) {
         if self.paused {
             self.sink.play();
+            if let Some(ref cf) = self.crossfade {
+                cf.sink.play();
+            }
         } else {
             self.sink.pause();
+            if let Some(ref cf) = self.crossfade {
+                cf.sink.pause();
+            }
         }
         self.paused = !self.paused;
     }
@@ -865,6 +906,9 @@ impl App {
     fn seek_to(&mut self, target: Duration) {
         let clamped = self.total_duration.map(|t| target.min(t)).unwrap_or(target);
 
+        if let Some(cf) = self.crossfade.take() {
+            cf.sink.stop();
+        }
         self.sink.stop();
         self.queued_track = None;
 
@@ -991,6 +1035,9 @@ impl App {
     }
 
     fn queue_next_track(&mut self) {
+        if self.crossfade_duration > 0.0 {
+            return; // crossfade handles transitions
+        }
         if self.queued_track.is_some() {
             return;
         }
@@ -1087,6 +1134,112 @@ impl App {
 
         // Queue the next-next track
         self.queue_next_track();
+    }
+
+    fn start_crossfade(&mut self) {
+        let next_path = match self.find_next_path() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let probe = probe_file(&next_path);
+        let file_name = probe.meta.title.clone().unwrap_or_else(|| {
+            next_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Unknown".into())
+        });
+
+        let file = match fs::File::open(&next_path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let buf = io::BufReader::new(file);
+        let source = match Decoder::new(buf) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let channels = source.channels();
+        let sample_rate = source.sample_rate();
+        let normalize_gain = rg_to_linear(probe.replay_gain_db);
+
+        let new_sink = Sink::connect_new(self.stream.mixer());
+        new_sink.set_volume(0.0);
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let piped = PipedSource::new(
+            source,
+            Arc::clone(&self.pipe_ready),
+            Arc::clone(&self.samples),
+            Arc::clone(&self.eq_params),
+            channels,
+            sample_rate,
+            Arc::clone(&finished),
+            normalize_gain,
+        );
+        new_sink.append(piped);
+        if self.paused {
+            new_sink.pause();
+        }
+
+        self.crossfade = Some(CrossfadeState {
+            sink: new_sink,
+            path: next_path,
+            file_name,
+            meta: probe.meta,
+            duration: probe.duration,
+            channels,
+            normalize_gain,
+            finished,
+        });
+    }
+
+    fn complete_crossfade(&mut self) {
+        let cf = match self.crossfade.take() {
+            Some(cf) => cf,
+            None => return,
+        };
+
+        self.sink.stop();
+        self.sink = cf.sink;
+        self.sink.set_volume(self.volume);
+
+        self.file_path = cf.path;
+        self.file_name = cf.file_name;
+        self.total_duration = cf.duration;
+        self.seek_base = Duration::ZERO;
+        self.channels = cf.channels;
+        self.normalize_gain = cf.normalize_gain;
+        self.current_finished = cf.finished;
+        self.queued_track = None;
+
+        // Reset lyrics, art, and waveform
+        self.lyrics = None;
+        self.lyrics_scroll = 0;
+        self.lyrics_loading = false;
+        self.lyrics_url.clear();
+        self.lyrics_rx = None;
+        self.album_art = None;
+        self.art_rx = None;
+        self.waveform = Arc::new(Mutex::new(Vec::new()));
+        if let Some(d) = self.total_duration {
+            spawn_waveform_scan(self.file_path.clone(), d, Arc::clone(&self.waveform));
+        }
+
+        // Spawn new lyrics fetchers
+        let lyrics_artist = cf.meta.artist.clone().unwrap_or_default();
+        let lyrics_title = cf.meta.title.clone().unwrap_or_else(|| {
+            self.file_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+        if !lyrics_title.is_empty() {
+            self.lyrics_rx = Some(spawn_lyrics_fetchers(lyrics_artist, lyrics_title));
+            self.lyrics_loading = true;
+        }
+
+        self.meta = cf.meta;
     }
 
     fn is_finished(&self) -> bool {
@@ -1406,8 +1559,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                 // Re-queue next track based on new mode
                                 if app.track_loaded {
                                     app.queued_track = None;
+                                    if let Some(cf) = app.crossfade.take() {
+                                        cf.sink.stop();
+                                    }
                                     app.sink.stop();
-                                    // Re-create sink for current track at current position
                                     let pos = app.position();
                                     app.seek_to(pos);
                                 }
@@ -1421,6 +1576,27 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                     app.shuffle_order.clear();
                                 }
                                 // Re-queue next track based on new mode
+                                if app.track_loaded {
+                                    app.queued_track = None;
+                                    if let Some(cf) = app.crossfade.take() {
+                                        cf.sink.stop();
+                                    }
+                                    app.sink.stop();
+                                    let pos = app.position();
+                                    app.seek_to(pos);
+                                }
+                            }
+                            KeyCode::Char('c') => {
+                                let idx = CROSSFADE_OPTIONS
+                                    .iter()
+                                    .position(|&d| (d - app.crossfade_duration).abs() < 0.1)
+                                    .unwrap_or(0);
+                                app.crossfade_duration = CROSSFADE_OPTIONS
+                                    [(idx + 1) % CROSSFADE_OPTIONS.len()];
+                                save_crossfade(app.crossfade_duration);
+                                if let Some(cf) = app.crossfade.take() {
+                                    cf.sink.stop();
+                                }
                                 if app.track_loaded {
                                     app.queued_track = None;
                                     app.sink.stop();
@@ -1571,8 +1747,43 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             }
         }
 
+        // Crossfade: start crossfading when approaching end of track
+        if app.crossfade_duration > 0.0
+            && app.track_loaded
+            && !app.paused
+            && app.crossfade.is_none()
+        {
+            if let Some(total) = app.total_duration {
+                if total.as_secs_f32() > app.crossfade_duration * 2.0 {
+                    let remaining = total.saturating_sub(app.position());
+                    if remaining <= Duration::from_secs_f32(app.crossfade_duration) {
+                        app.start_crossfade();
+                    }
+                }
+            }
+        }
+
+        // Crossfade: ramp volumes
+        if let Some(ref cf) = app.crossfade {
+            if let Some(total) = app.total_duration {
+                let remaining = total.saturating_sub(app.position()).as_secs_f32();
+                let progress = 1.0 - (remaining / app.crossfade_duration).clamp(0.0, 1.0);
+                app.sink.set_volume(app.volume * (1.0 - progress));
+                cf.sink.set_volume(app.volume * progress);
+            }
+        }
+
+        // Crossfade complete: current track finished
+        if app.crossfade.is_some()
+            && app.track_loaded
+            && (app.current_finished.load(Ordering::Relaxed) || app.sink.empty())
+        {
+            app.complete_crossfade();
+        }
+
         // Gapless transition: current source finished, queued is now playing
-        if app.track_loaded
+        if app.crossfade.is_none()
+            && app.track_loaded
             && app.current_finished.load(Ordering::Relaxed)
             && app.queued_track.is_some()
         {
@@ -1580,7 +1791,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         }
 
         // All sources exhausted (no queued track)
-        if app.track_loaded && app.is_finished() && !app.paused {
+        if app.track_loaded && app.is_finished() && !app.paused && app.crossfade.is_none() {
             if app.root_dir.is_some() {
                 app.browser_open = true;
                 app.track_loaded = false;
@@ -1774,6 +1985,11 @@ fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
 
+        let crossfade_label = if app.crossfade_duration > 0.0 {
+            format!("{}s", app.crossfade_duration as u8)
+        } else {
+            "Off".into()
+        };
         controls::draw_controls(
             frame,
             chunks[4],
@@ -1781,6 +1997,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             app.root_dir.is_some(),
             app.shuffle,
             app.repeat_mode.label(),
+            &crossfade_label,
         );
         if show_hint {
             controls::draw_scope_hint(frame, chunks[5]);
