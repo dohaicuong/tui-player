@@ -10,6 +10,7 @@ A terminal music player written in Rust.
 - Album art display (half-block rendering)
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll)
 - File browser with tree navigation (press `f`) — accepts directories as input
+- Auto-advances to the next track when a song finishes
 - 32-band graphic equalizer with presets (press `e`) — real-time biquad filtering
 - Persistent settings (volume, visualizer mode, lyrics visibility, EQ)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
