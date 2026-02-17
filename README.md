@@ -11,6 +11,7 @@ A terminal music player written in Rust.
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll)
 - File browser with tree navigation (press `f`) — accepts directories as input, fuzzy search with `/`
 - Gapless playback with pre-buffered next track
+- ReplayGain volume normalization (reads track/album gain tags)
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic equalizer with presets (press `e`) — real-time biquad filtering
 - Persistent settings (volume, visualizer mode, lyrics visibility, EQ)

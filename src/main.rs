@@ -60,6 +60,7 @@ struct PipedSource<S> {
     channels: u16,
     update_counter: u32,
     finished: Arc<AtomicBool>,
+    normalize_gain: f32,
 }
 
 impl<S> PipedSource<S>
@@ -74,6 +75,7 @@ where
         channels: u16,
         sample_rate: u32,
         finished: Arc<AtomicBool>,
+        normalize_gain: f32,
     ) -> Self {
         let eq_filters = {
             let params = eq_params.lock().unwrap();
@@ -90,6 +92,7 @@ where
             channels,
             update_counter: 0,
             finished,
+            normalize_gain,
         }
     }
 
@@ -130,8 +133,9 @@ where
             }
         }
 
-        // Apply EQ
-        let sample = self.eq_filters.process(raw, self.channel_idx as usize);
+        // Apply EQ then ReplayGain normalization
+        let sample = self.eq_filters.process(raw, self.channel_idx as usize)
+            * self.normalize_gain;
         self.channel_idx = (self.channel_idx + 1) % self.channels;
 
         // Write to pipe for external scope-tui
@@ -197,6 +201,7 @@ struct QueuedTrack {
     meta: TrackMeta,
     duration: Option<Duration>,
     channels: u16,
+    normalize_gain: f32,
     finished: Arc<AtomicBool>,
 }
 
@@ -233,6 +238,7 @@ struct App {
     browser_filtered: Vec<PathBuf>,
     browser_filter_idx: usize,
     track_loaded: bool,
+    normalize_gain: f32,
     current_finished: Arc<AtomicBool>,
     queued_track: Option<QueuedTrack>,
     eq_open: bool,
@@ -324,12 +330,13 @@ pub struct TrackMeta {
 struct ProbeInfo {
     duration: Option<Duration>,
     meta: TrackMeta,
+    replay_gain_db: Option<f32>,
 }
 
 fn probe_file(path: &PathBuf) -> ProbeInfo {
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return ProbeInfo { duration: None, meta: TrackMeta::default() },
+        Err(_) => return ProbeInfo { duration: None, meta: TrackMeta::default(), replay_gain_db: None },
     };
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -342,7 +349,7 @@ fn probe_file(path: &PathBuf) -> ProbeInfo {
         .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
     {
         Ok(p) => p,
-        Err(_) => return ProbeInfo { duration: None, meta: TrackMeta::default() },
+        Err(_) => return ProbeInfo { duration: None, meta: TrackMeta::default(), replay_gain_db: None },
     };
 
     // Extract duration
@@ -373,6 +380,9 @@ fn probe_file(path: &PathBuf) -> ProbeInfo {
         }
     }
 
+    let mut rg_track: Option<f32> = None;
+    let mut rg_album: Option<f32> = None;
+
     for tag in &all_tags {
         match tag.std_key {
             Some(StandardTagKey::TrackTitle) => {
@@ -390,11 +400,38 @@ fn probe_file(path: &PathBuf) -> ProbeInfo {
             Some(StandardTagKey::Genre) => {
                 if meta.genre.is_none() { meta.genre = tag_string(&tag.value); }
             }
+            Some(StandardTagKey::ReplayGainTrackGain) => {
+                if rg_track.is_none() {
+                    rg_track = tag_string(&tag.value).and_then(|s| parse_gain_db(&s));
+                }
+            }
+            Some(StandardTagKey::ReplayGainAlbumGain) => {
+                if rg_album.is_none() {
+                    rg_album = tag_string(&tag.value).and_then(|s| parse_gain_db(&s));
+                }
+            }
             _ => {}
         }
     }
 
-    ProbeInfo { duration, meta }
+    // Prefer track gain, fall back to album gain
+    let replay_gain_db = rg_track.or(rg_album);
+
+    ProbeInfo { duration, meta, replay_gain_db }
+}
+
+/// Parse a ReplayGain string like "-6.5 dB" or "-6.5" into f32 dB value.
+fn parse_gain_db(s: &str) -> Option<f32> {
+    let s = s.trim().trim_end_matches("dB").trim_end_matches("db").trim();
+    s.parse::<f32>().ok()
+}
+
+/// Convert ReplayGain dB to linear multiplier. Returns 1.0 if None.
+fn rg_to_linear(db: Option<f32>) -> f32 {
+    match db {
+        Some(g) => 10.0f32.powf(g / 20.0),
+        None => 1.0,
+    }
 }
 
 impl App {
@@ -419,6 +456,7 @@ impl App {
         let samples: SampleBuf = Arc::new(Mutex::new(VecDeque::with_capacity(SAMPLE_BUF_SIZE)));
         let eq_params = Arc::new(Mutex::new(eq::load_eq()));
 
+        let normalize_gain = rg_to_linear(probe.replay_gain_db);
         let file = fs::File::open(path).expect("failed to open file");
         let buf = io::BufReader::new(file);
         let source = Decoder::new(buf).expect("failed to decode audio file");
@@ -433,6 +471,7 @@ impl App {
             channels,
             sample_rate,
             Arc::clone(&current_finished),
+            normalize_gain,
         );
         sink.append(piped);
 
@@ -488,6 +527,7 @@ impl App {
             browser_filtered: Vec::new(),
             browser_filter_idx: 0,
             track_loaded: true,
+            normalize_gain,
             current_finished,
             queued_track: None,
             eq_open: false,
@@ -546,6 +586,7 @@ impl App {
             browser_filtered: Vec::new(),
             browser_filter_idx: 0,
             track_loaded: false,
+            normalize_gain: 1.0,
             current_finished: Arc::new(AtomicBool::new(false)),
             queued_track: None,
             eq_open: false,
@@ -568,6 +609,7 @@ impl App {
         self.file_path = path.clone();
         self.seek_base = Duration::ZERO;
         self.paused = false;
+        self.normalize_gain = rg_to_linear(probe.replay_gain_db);
 
         let new_sink = Sink::connect_new(self.stream.mixer());
         new_sink.set_volume(self.volume);
@@ -586,6 +628,7 @@ impl App {
             self.channels,
             sample_rate,
             Arc::clone(&self.current_finished),
+            self.normalize_gain,
         );
         new_sink.append(piped);
         self.sink = new_sink;
@@ -674,6 +717,7 @@ impl App {
             self.channels,
             sample_rate,
             Arc::clone(&self.current_finished),
+            self.normalize_gain,
         );
         new_sink.append(piped);
 
@@ -748,6 +792,7 @@ impl App {
         };
         let channels = source.channels();
         let sample_rate = source.sample_rate();
+        let normalize_gain = rg_to_linear(probe.replay_gain_db);
         let finished = Arc::new(AtomicBool::new(false));
         let piped = PipedSource::new(
             source,
@@ -757,6 +802,7 @@ impl App {
             channels,
             sample_rate,
             Arc::clone(&finished),
+            normalize_gain,
         );
         self.sink.append(piped);
 
@@ -766,6 +812,7 @@ impl App {
             meta: probe.meta,
             duration: probe.duration,
             channels,
+            normalize_gain,
             finished,
         });
     }
@@ -781,6 +828,7 @@ impl App {
         self.total_duration = queued.duration;
         self.seek_base = Duration::ZERO;
         self.channels = queued.channels;
+        self.normalize_gain = queued.normalize_gain;
         self.current_finished = queued.finished;
 
         // Reset lyrics and art

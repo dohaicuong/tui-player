@@ -43,6 +43,7 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - Mouse support (click seek, volume, play/pause, lyrics toggle, scroll)
 - File browser tree overlay (f key) — browse directories, select tracks, switch playback, fuzzy search (/)
 - Gapless playback: pre-buffers next track in rodio sink queue for seamless transitions
+- ReplayGain normalization: reads track/album gain tags, applies per-sample linear gain in PipedSource
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic EQ overlay (e key) — biquad PeakingEQ filters, 11 presets, ±12 dB per band, real-time DSP
 - Keyboard: Space=play/pause, arrows=seek/volume, n/N=next/prev track, v=vis mode, l=lyrics, e=EQ, f=file browser, j/k=scroll, q/Ctrl+C=quit

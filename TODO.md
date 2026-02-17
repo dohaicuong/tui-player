@@ -7,4 +7,4 @@
 - [x] Search in file browser (type to filter files)
 - [x] Gapless playback (pre-buffer next track to avoid silence)
 - [ ] Media key support (hardware play/pause/next/prev)
-- [ ] ReplayGain / volume normalization (even out loudness between tracks)
+- [x] ReplayGain / volume normalization (even out loudness between tracks)
