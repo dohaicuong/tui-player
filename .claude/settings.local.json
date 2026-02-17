@@ -28,7 +28,8 @@
       "Bash(ldd:*)",
       "WebFetch(domain:play.google.com)",
       "WebFetch(domain:www.quora.com)",
-      "WebFetch(domain:webaudio.github.io)"
+      "WebFetch(domain:webaudio.github.io)",
+      "Bash(cargo clippy:*)"
     ]
   }
 }
