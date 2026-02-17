@@ -9,6 +9,7 @@ A terminal music player written in Rust.
 - Lyrics fetching from lyrics.ovh and Genius
 - Album art display (half-block rendering)
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll)
+- File browser with tree navigation (press `f`) — accepts directories as input
 - Persistent settings (volume, visualizer mode, lyrics visibility)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
 
@@ -39,7 +40,7 @@ cargo install --path .
 ## Usage
 
 ```sh
-tui-player <music-file>
+tui-player <music-file-or-directory>
 ```
 
 ## Keybindings
@@ -51,6 +52,7 @@ tui-player <music-file>
 | `Up` / `Down` | Volume up / down |
 | `v` | Cycle visualizer mode |
 | `l` | Toggle lyrics panel |
+| `f` | Open file browser |
 | `j` / `k` | Scroll lyrics |
 | `q` / `Ctrl+C` | Quit |
 

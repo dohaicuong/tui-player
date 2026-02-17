@@ -19,9 +19,13 @@ use symphonia::core::{
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
+    style::{Color, Style},
+    text::Span,
+    widgets::Paragraph,
     DefaultTerminal, Frame,
 };
+use tui_tree_widget::{TreeItem, TreeState};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 mod now_playing;
 use now_playing::{spawn_art_fetch, ArtPixels, ART_COLS, ART_ROWS};
@@ -32,6 +36,7 @@ use visualizer::VisMode;
 mod lyrics;
 use lyrics::{spawn_lyrics_fetchers, LyricsResult};
 
+mod file_browser;
 mod gauge;
 mod progress;
 mod volume;
@@ -166,6 +171,11 @@ struct App {
     lyrics_rx: Option<mpsc::Receiver<Option<LyricsResult>>>,
     album_art: Option<ArtPixels>,
     art_rx: Option<mpsc::Receiver<ArtPixels>>,
+    root_dir: Option<PathBuf>,
+    browser_open: bool,
+    browser_state: TreeState<PathBuf>,
+    browser_items: Vec<TreeItem<'static, PathBuf>>,
+    track_loaded: bool,
 }
 
 impl App {
@@ -326,7 +336,7 @@ fn probe_file(path: &PathBuf) -> ProbeInfo {
 }
 
 impl App {
-    fn new(path: &PathBuf) -> Self {
+    fn new_with_track(path: &PathBuf, root_dir: Option<PathBuf>) -> Self {
         let probe = probe_file(path);
         let file_name = probe.meta.title.clone().unwrap_or_else(|| {
             path.file_name()
@@ -367,6 +377,11 @@ impl App {
             None
         };
 
+        let browser_items = root_dir
+            .as_ref()
+            .map(|d| file_browser::scan_directory(d))
+            .unwrap_or_default();
+
         App {
             file_path: path.clone(),
             file_name,
@@ -391,7 +406,114 @@ impl App {
             lyrics_rx,
             album_art: None,
             art_rx: None,
+            root_dir,
+            browser_open: false,
+            browser_state: TreeState::default(),
+            browser_items,
+            track_loaded: true,
         }
+    }
+
+    fn new_idle(root_dir: PathBuf) -> Self {
+        let stream = OutputStreamBuilder::from_default_device()
+            .expect("failed to find audio device")
+            .open_stream_or_fallback()
+            .expect("failed to open audio stream");
+        let volume = load_volume();
+        let sink = Sink::connect_new(stream.mixer());
+        sink.set_volume(volume);
+
+        let pipe_ready = Arc::new(AtomicBool::new(true));
+        let samples: SampleBuf = Arc::new(Mutex::new(VecDeque::with_capacity(SAMPLE_BUF_SIZE)));
+
+        let browser_items = file_browser::scan_directory(&root_dir);
+        let mut browser_state = TreeState::default();
+        browser_state.select_first();
+
+        App {
+            file_path: PathBuf::new(),
+            file_name: String::new(),
+            sink,
+            paused: true,
+            volume,
+            total_duration: None,
+            seek_base: Duration::ZERO,
+            channels: 2,
+            pipe_ready,
+            samples,
+            stream,
+            vis_mode: load_vis_mode(),
+            show_visualizer: true,
+            meta: TrackMeta::default(),
+            regions: LayoutRegions::default(),
+            lyrics: None,
+            lyrics_scroll: 0,
+            lyrics_visible: load_lyrics_visible(),
+            lyrics_loading: false,
+            lyrics_url: String::new(),
+            lyrics_rx: None,
+            album_art: None,
+            art_rx: None,
+            root_dir: Some(root_dir),
+            browser_open: true,
+            browser_state,
+            browser_items,
+            track_loaded: false,
+        }
+    }
+
+    fn switch_track(&mut self, path: &PathBuf) {
+        self.sink.stop();
+
+        let probe = probe_file(path);
+        self.file_name = probe.meta.title.clone().unwrap_or_else(|| {
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Unknown".into())
+        });
+        self.total_duration = probe.duration;
+        self.file_path = path.clone();
+        self.seek_base = Duration::ZERO;
+        self.paused = false;
+
+        let new_sink = Sink::connect_new(self.stream.mixer());
+        new_sink.set_volume(self.volume);
+
+        let file = fs::File::open(path).expect("failed to open file");
+        let buf = io::BufReader::new(file);
+        let source = Decoder::new(buf).expect("failed to decode audio file");
+        self.channels = source.channels();
+        let piped = PipedSource::new(source, Arc::clone(&self.pipe_ready), Arc::clone(&self.samples));
+        new_sink.append(piped);
+        self.sink = new_sink;
+
+        if let Ok(mut sbuf) = self.samples.lock() {
+            sbuf.clear();
+        }
+
+        // Reset lyrics and art
+        self.lyrics = None;
+        self.lyrics_scroll = 0;
+        self.lyrics_loading = false;
+        self.lyrics_url.clear();
+        self.lyrics_rx = None;
+        self.album_art = None;
+        self.art_rx = None;
+
+        // Spawn new lyrics fetchers
+        let lyrics_artist = probe.meta.artist.clone().unwrap_or_default();
+        let lyrics_title = probe.meta.title.clone().unwrap_or_else(|| {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+        if !lyrics_title.is_empty() {
+            self.lyrics_rx = Some(spawn_lyrics_fetchers(lyrics_artist, lyrics_title));
+            self.lyrics_loading = true;
+        }
+
+        self.meta = probe.meta;
+        self.track_loaded = true;
     }
 
     fn toggle_pause(&mut self) {
@@ -478,7 +600,7 @@ fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     let scope_tui_installed = has_scope_tui();
     if args.len() < 2 {
-        eprintln!("Usage: tui <music-file>");
+        eprintln!("Usage: tui-player <music-file-or-directory>");
         if scope_tui_installed {
             eprintln!();
             eprintln!("For external visualization, run in another terminal:");
@@ -488,7 +610,7 @@ fn main() -> io::Result<()> {
     }
     let path = PathBuf::from(&args[1]);
     if !path.exists() {
-        eprintln!("File not found: {}", path.display());
+        eprintln!("Path not found: {}", path.display());
         std::process::exit(1);
     }
 
@@ -498,7 +620,12 @@ fn main() -> io::Result<()> {
 
     crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
     let mut terminal = ratatui::init();
-    let mut app = App::new(&path);
+    let mut app = if path.is_dir() {
+        App::new_idle(path)
+    } else {
+        let root_dir = path.parent().map(|p| p.to_path_buf());
+        App::new_with_track(&path, root_dir)
+    };
     app.show_visualizer = scope_tui_installed;
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
@@ -515,40 +642,39 @@ fn hit(rect: Rect, col: u16, row: u16) -> bool {
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     loop {
-        // Poll lyrics results — first Some wins, keep trying until all sources done
-        if let Some(ref rx) = app.lyrics_rx {
-            loop {
-                match rx.try_recv() {
-                    Ok(Some(lr)) => {
-                        app.lyrics_url = lr.url.clone();
-                        // Spawn album art fetch if we got an art URL
-                        if let Some(ref art_url) = lr.art_url {
-                            app.art_rx = Some(spawn_art_fetch(art_url.clone(), ART_COLS, ART_ROWS));
+        if app.track_loaded {
+            // Poll lyrics results — first Some wins, keep trying until all sources done
+            if let Some(ref rx) = app.lyrics_rx {
+                loop {
+                    match rx.try_recv() {
+                        Ok(Some(lr)) => {
+                            app.lyrics_url = lr.url.clone();
+                            if let Some(ref art_url) = lr.art_url {
+                                app.art_rx =
+                                    Some(spawn_art_fetch(art_url.clone(), ART_COLS, ART_ROWS));
+                            }
+                            app.lyrics = Some(lr);
+                            app.lyrics_loading = false;
+                            app.lyrics_rx = None;
+                            break;
                         }
-                        app.lyrics = Some(lr);
-                        app.lyrics_loading = false;
-                        app.lyrics_rx = None;
-                        break;
-                    }
-                    Ok(None) => {
-                        // This source returned nothing, keep waiting for others
-                    }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        // All sources done, none had lyrics
-                        app.lyrics_loading = false;
-                        app.lyrics_rx = None;
-                        break;
+                        Ok(None) => {}
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            app.lyrics_loading = false;
+                            app.lyrics_rx = None;
+                            break;
+                        }
                     }
                 }
             }
-        }
 
-        // Poll album art download
-        if let Some(ref rx) = app.art_rx {
-            if let Ok(pixels) = rx.try_recv() {
-                app.album_art = Some(pixels);
-                app.art_rx = None;
+            // Poll album art download
+            if let Some(ref rx) = app.art_rx {
+                if let Ok(pixels) = rx.try_recv() {
+                    app.album_art = Some(pixels);
+                    app.art_rx = None;
+                }
             }
         }
 
@@ -556,31 +682,89 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') | KeyCode::Char('c')
-                        if key.code == KeyCode::Char('q')
-                            || key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Quit always works
+                    if key.code == KeyCode::Char('q')
+                        || (key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL))
                     {
                         break;
                     }
-                    KeyCode::Char(' ') => app.toggle_pause(),
-                    KeyCode::Up => app.volume_up(),
-                    KeyCode::Down => app.volume_down(),
-                    KeyCode::Right => app.seek(5),
-                    KeyCode::Left => app.seek(-5),
-                    KeyCode::Char('v') => {
-                        app.vis_mode = app.vis_mode.next();
-                        save_vis_mode(app.vis_mode);
+
+                    if app.browser_open {
+                        match key.code {
+                            KeyCode::Up => {
+                                app.browser_state.key_up();
+                            }
+                            KeyCode::Down => {
+                                app.browser_state.key_down();
+                            }
+                            KeyCode::Left => {
+                                app.browser_state.key_left();
+                            }
+                            KeyCode::Right => {
+                                app.browser_state.key_right();
+                            }
+                            KeyCode::Enter => {
+                                if let Some(path) =
+                                    file_browser::selected_file(&app.browser_state)
+                                {
+                                    app.switch_track(&path);
+                                    app.browser_open = false;
+                                } else {
+                                    app.browser_state.toggle_selected();
+                                }
+                            }
+                            KeyCode::Esc | KeyCode::Char('f') => {
+                                if app.track_loaded {
+                                    app.browser_open = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match key.code {
+                            KeyCode::Char(' ') => {
+                                if app.track_loaded {
+                                    app.toggle_pause();
+                                }
+                            }
+                            KeyCode::Up => app.volume_up(),
+                            KeyCode::Down => app.volume_down(),
+                            KeyCode::Right => {
+                                if app.track_loaded {
+                                    app.seek(5);
+                                }
+                            }
+                            KeyCode::Left => {
+                                if app.track_loaded {
+                                    app.seek(-5);
+                                }
+                            }
+                            KeyCode::Char('v') => {
+                                app.vis_mode = app.vis_mode.next();
+                                save_vis_mode(app.vis_mode);
+                            }
+                            KeyCode::Char('l') => {
+                                app.lyrics_visible = !app.lyrics_visible;
+                                save_lyrics_visible(app.lyrics_visible);
+                            }
+                            KeyCode::Char('j') => {
+                                app.lyrics_scroll = app.lyrics_scroll.saturating_add(1);
+                            }
+                            KeyCode::Char('k') => {
+                                app.lyrics_scroll = app.lyrics_scroll.saturating_sub(1);
+                            }
+                            KeyCode::Char('f') => {
+                                if app.root_dir.is_some() {
+                                    app.browser_open = true;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
-                    KeyCode::Char('l') => {
-                        app.lyrics_visible = !app.lyrics_visible;
-                        save_lyrics_visible(app.lyrics_visible);
-                    }
-                    KeyCode::Char('j') => app.lyrics_scroll = app.lyrics_scroll.saturating_add(1),
-                    KeyCode::Char('k') => app.lyrics_scroll = app.lyrics_scroll.saturating_sub(1),
-                    _ => {}
-                },
-                Event::Mouse(mouse) => {
+                }
+                Event::Mouse(mouse) if !app.browser_open => {
                     let col = mouse.column;
                     let row = mouse.row;
                     match mouse.kind {
@@ -589,23 +773,31 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                 app.toggle_pause();
                             } else if hit(app.regions.progress, col, row) {
                                 if let Some(total) = app.total_duration {
-                                    let inner_x = col.saturating_sub(app.regions.progress.x + 1);
-                                    let inner_w = app.regions.progress.width.saturating_sub(2);
+                                    let inner_x =
+                                        col.saturating_sub(app.regions.progress.x + 1);
+                                    let inner_w =
+                                        app.regions.progress.width.saturating_sub(2);
                                     if inner_w > 0 {
                                         let frac = inner_x as f64 / inner_w as f64;
-                                        let target = Duration::from_secs_f64(frac * total.as_secs_f64());
+                                        let target = Duration::from_secs_f64(
+                                            frac * total.as_secs_f64(),
+                                        );
                                         app.seek_to(target);
                                     }
                                 }
                             } else if hit(app.regions.volume, col, row) {
-                                let inner_x = col.saturating_sub(app.regions.volume.x + 1);
-                                let inner_w = app.regions.volume.width.saturating_sub(2);
+                                let inner_x =
+                                    col.saturating_sub(app.regions.volume.x + 1);
+                                let inner_w =
+                                    app.regions.volume.width.saturating_sub(2);
                                 if inner_w > 0 {
                                     let frac = inner_x as f64 / inner_w as f64;
                                     app.set_volume(frac as f32 * 2.0);
                                 }
-                            } else if (!app.lyrics_visible && hit(app.regions.lyrics, col, row))
-                                || (app.lyrics_visible && hit(app.regions.lyrics_title, col, row))
+                            } else if (!app.lyrics_visible
+                                && hit(app.regions.lyrics, col, row))
+                                || (app.lyrics_visible
+                                    && hit(app.regions.lyrics_title, col, row))
                             {
                                 app.lyrics_visible = !app.lyrics_visible;
                                 save_lyrics_visible(app.lyrics_visible);
@@ -635,100 +827,128 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             }
         }
 
-        if app.is_finished() && !app.paused {
-            break;
+        if app.track_loaded && app.is_finished() && !app.paused {
+            if app.root_dir.is_some() {
+                app.browser_open = true;
+                app.track_loaded = false;
+            } else {
+                break;
+            }
         }
     }
     Ok(())
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
-    let np = now_playing::draw_now_playing(
-        frame,
-        app.paused,
-        &app.file_name,
-        &app.meta,
-        app.album_art.as_ref(),
-    );
-    app.regions.now_playing = np.region;
+    if !app.track_loaded {
+        // Idle screen — no track playing yet
+        let area = frame.area();
+        let msg = Paragraph::new(Span::styled(
+            "No track playing — select a file from the browser",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .alignment(Alignment::Center);
+        let y = area.height / 2;
+        frame.render_widget(msg, Rect::new(area.x, y, area.width, 1));
+    } else {
+        let np = now_playing::draw_now_playing(
+            frame,
+            app.paused,
+            &app.file_name,
+            &app.meta,
+            app.album_art.as_ref(),
+        );
+        app.regions.now_playing = np.region;
 
-    let show_middle = app.show_visualizer || app.lyrics_visible;
-    let show_hint = !app.show_visualizer;
+        let show_middle = app.show_visualizer || app.lyrics_visible;
+        let show_hint = !app.show_visualizer;
 
-    let chunks = Layout::vertical([
-        Constraint::Length(np.row_height),
-        if show_middle { Constraint::Min(8) } else { Constraint::Length(0) },
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Length(if show_hint { 1 } else { 0 }),
-    ])
-    .split(np.main_area);
+        let chunks = Layout::vertical([
+            Constraint::Length(np.row_height),
+            if show_middle {
+                Constraint::Min(8)
+            } else {
+                Constraint::Length(0)
+            },
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(if show_hint { 1 } else { 0 }),
+        ])
+        .split(np.main_area);
 
-    app.regions.visualizer = chunks[1];
-    app.regions.progress = chunks[2];
-    app.regions.volume = chunks[3];
+        app.regions.visualizer = chunks[1];
+        app.regions.progress = chunks[2];
+        app.regions.volume = chunks[3];
 
-    // Now playing bar (only when no album art — horizontal top bar)
-    if np.row_height > 0 {
-        app.regions.now_playing = chunks[0];
-        now_playing::draw_now_playing_bar(frame, chunks[0], app.paused, &app.file_name, &app.meta);
-    }
-
-    // Determine visualizer and lyrics areas within chunks[1]
-    if show_middle {
-        let collapsed_w: u16 = 3;
-        let (vis_area, lyrics_rect) = if app.show_visualizer && app.lyrics_visible {
-            // Both: split 50/50
-            let split = Layout::horizontal([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ]).split(chunks[1]);
-            (Some(split[0]), split[1])
-        } else if app.show_visualizer {
-            // Visualizer + collapsed lyrics tab
-            let split = Layout::horizontal([
-                Constraint::Min(0),
-                Constraint::Length(collapsed_w),
-            ]).split(chunks[1]);
-            (Some(split[0]), split[1])
-        } else {
-            // No visualizer — lyrics gets full area
-            (None, chunks[1])
-        };
-
-        if let Some(va) = vis_area {
-            app.regions.visualizer = va;
-        } else {
-            app.regions.visualizer = Rect::default();
-        }
-        app.regions.lyrics = lyrics_rect;
-        app.regions.lyrics_title = Rect::new(lyrics_rect.x, lyrics_rect.y, lyrics_rect.width, 1);
-
-        // Render visualizer
-        if let Some(va) = vis_area {
-            visualizer::draw_visualizer(frame, va, app.vis_mode, &app.samples, app.channels);
-        }
-
-        // Render lyrics panel
-        if app.lyrics_visible {
-            lyrics::draw_lyrics(
+        if np.row_height > 0 {
+            app.regions.now_playing = chunks[0];
+            now_playing::draw_now_playing_bar(
                 frame,
-                lyrics_rect,
-                app.lyrics.as_ref(),
-                &app.lyrics_url,
-                app.lyrics_loading,
-                &mut app.lyrics_scroll,
+                chunks[0],
+                app.paused,
+                &app.file_name,
+                &app.meta,
             );
-        } else if app.show_visualizer {
-            lyrics::draw_lyrics_collapsed(frame, lyrics_rect);
+        }
+
+        if show_middle {
+            let collapsed_w: u16 = 3;
+            let (vis_area, lyrics_rect) = if app.show_visualizer && app.lyrics_visible {
+                let split = Layout::horizontal([
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(chunks[1]);
+                (Some(split[0]), split[1])
+            } else if app.show_visualizer {
+                let split = Layout::horizontal([
+                    Constraint::Min(0),
+                    Constraint::Length(collapsed_w),
+                ])
+                .split(chunks[1]);
+                (Some(split[0]), split[1])
+            } else {
+                (None, chunks[1])
+            };
+
+            if let Some(va) = vis_area {
+                app.regions.visualizer = va;
+            } else {
+                app.regions.visualizer = Rect::default();
+            }
+            app.regions.lyrics = lyrics_rect;
+            app.regions.lyrics_title =
+                Rect::new(lyrics_rect.x, lyrics_rect.y, lyrics_rect.width, 1);
+
+            if let Some(va) = vis_area {
+                visualizer::draw_visualizer(frame, va, app.vis_mode, &app.samples, app.channels);
+            }
+
+            if app.lyrics_visible {
+                lyrics::draw_lyrics(
+                    frame,
+                    lyrics_rect,
+                    app.lyrics.as_ref(),
+                    &app.lyrics_url,
+                    app.lyrics_loading,
+                    &mut app.lyrics_scroll,
+                );
+            } else if app.show_visualizer {
+                lyrics::draw_lyrics_collapsed(frame, lyrics_rect);
+            }
+        }
+
+        progress::draw_progress(frame, chunks[2], app.position(), app.total_duration);
+        volume::draw_volume(frame, chunks[3], app.volume);
+        controls::draw_controls(frame, chunks[4], app.show_visualizer, app.root_dir.is_some());
+        if show_hint {
+            controls::draw_scope_hint(frame, chunks[5]);
         }
     }
 
-    progress::draw_progress(frame, chunks[2], app.position(), app.total_duration);
-    volume::draw_volume(frame, chunks[3], app.volume);
-    controls::draw_controls(frame, chunks[4], app.show_visualizer);
-    if show_hint {
-        controls::draw_scope_hint(frame, chunks[5]);
+    // File browser overlay (rendered on top)
+    if app.browser_open {
+        file_browser::draw_file_browser(frame, &app.browser_items, &mut app.browser_state);
     }
 }

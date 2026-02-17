@@ -13,10 +13,12 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - **image** 0.25 — album art resizing
 - **ureq** 3 — HTTP client (lyrics/art fetching)
 - **serde_json** 1 — JSON parsing
+- **tui-tree-widget** 0.24 — file browser tree widget
 - **libc** 0.2 — named pipe creation
 
 ## Key File Map
-- `src/main.rs` — App struct, PipedSource, event loop (`run()`), playback logic, config I/O (`config_dir`, load/save_volume, load/save_vis_mode, load/save_lyrics_visible), TrackMeta, probe_file(), draw() orchestration, SampleBuf type alias
+- `src/main.rs` — App struct, PipedSource, event loop (`run()`), playback logic, config I/O, TrackMeta, probe_file(), draw() orchestration, SampleBuf type alias, switch_track()
+- `src/file_browser.rs` — File browser overlay: scan_directory(), draw_file_browser(), selected_file(), AUDIO_EXTENSIONS, is_audio_file()
 - `src/now_playing.rs` — Now Playing panel: AlbumArtWidget, fetch/spawn_art_fetch, draw_now_playing (vertical art panel), draw_now_playing_bar (horizontal compact bar), ART_ROWS/ART_COLS, ArtPixels type
 - `src/visualizer.rs` — VisMode enum, braille constants, OscilloscopeWidget, VectorscopeWidget, SpectroscopeWidget, draw_visualizer()
 - `src/lyrics.rs` — LyricsResult, url_encode, html_to_text/decode_entity, fetch_lyrics_ovh, fetch_lyrics_genius, spawn_lyrics_fetchers, draw_lyrics, draw_lyrics_collapsed
@@ -32,12 +34,13 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - `main.rs` re-exports from modules: `spawn_art_fetch`, `ArtPixels`, `ART_COLS`, `ART_ROWS`, `VisMode`, `spawn_lyrics_fetchers`, `LyricsResult`
 
 ## Implemented Features
-- Single-file playback (MP3/FLAC/OGG/WAV/AAC)
+- File and directory playback (MP3/FLAC/OGG/WAV/AAC/M4A)
 - 3 visualizer modes: oscilloscope, vectorscope, spectroscope (braille Unicode)
 - Lyrics fetching from lyrics.ovh + Genius web scraping
 - Album art from Genius search results (half-block rendering)
 - Mouse support (click seek, volume, play/pause, lyrics toggle, scroll)
-- Keyboard: Space=play/pause, arrows=seek/volume, v=vis mode, l=lyrics, j/k=scroll, q/Ctrl+C=quit
+- File browser tree overlay (f key) — browse directories, select tracks, switch playback
+- Keyboard: Space=play/pause, arrows=seek/volume, v=vis mode, l=lyrics, f=file browser, j/k=scroll, q/Ctrl+C=quit
 - Persistent config at `~/.config/tui-player/` (volume, vis_mode, lyrics_visible)
 - Optional scope-tui integration via named pipe `/tmp/tui-player.pipe`
 - Adaptive layout (compact vs vertical left panel when album art loads)

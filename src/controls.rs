@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw_controls(frame: &mut Frame, area: Rect, show_visualizer: bool) {
+pub fn draw_controls(frame: &mut Frame, area: Rect, show_visualizer: bool, has_browser: bool) {
     let mut help_spans = vec![
         Span::styled(" Space ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Play/Pause  "),
@@ -25,6 +25,12 @@ pub fn draw_controls(frame: &mut Frame, area: Rect, show_visualizer: bool) {
         Span::styled(" l ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Lyrics  "),
     ]);
+    if has_browser {
+        help_spans.extend([
+            Span::styled(" f ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" Files  "),
+        ]);
+    }
     help_spans.extend([
         Span::styled(" q ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Quit"),
