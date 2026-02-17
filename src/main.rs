@@ -1822,7 +1822,27 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 .position(|f| f == &app.file_path)
                 .map(|i| (i + 1, files.len()))
         };
-        let np_height = now_playing::now_playing_height(&app.meta);
+        let term_w = frame.area().width;
+        let np_height = now_playing::now_playing_height(
+            &app.meta,
+            &app.file_name,
+            track_pos,
+            term_w,
+        );
+
+        let crossfade_label: String = if app.crossfade_duration > 0.0 {
+            format!("{}s", app.crossfade_duration as u8)
+        } else {
+            "Off".into()
+        };
+        let controls_h = controls::controls_height(
+            term_w,
+            app.show_visualizer,
+            app.root_dir.is_some(),
+            app.shuffle,
+            app.repeat_mode.label(),
+            &crossfade_label,
+        );
 
         let show_middle = app.show_visualizer || app.lyrics_visible;
         let show_hint = !app.show_visualizer;
@@ -1836,7 +1856,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             },
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(controls_h),
             Constraint::Length(if show_hint { 1 } else { 0 }),
         ])
         .split(frame.area());
@@ -1978,11 +1998,6 @@ fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
 
-        let crossfade_label = if app.crossfade_duration > 0.0 {
-            format!("{}s", app.crossfade_duration as u8)
-        } else {
-            "Off".into()
-        };
         controls::draw_controls(
             frame,
             chunks[4],

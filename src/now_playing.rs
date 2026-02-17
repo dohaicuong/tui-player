@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
+    widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap},
     Frame,
 };
 
@@ -113,13 +113,53 @@ impl Widget for AlbumArtWidget<'_> {
     }
 }
 
-/// Return the height needed for the compact Now Playing bar.
-pub fn now_playing_height(meta: &TrackMeta) -> u16 {
-    let has_meta = meta.artist.is_some()
-        || meta.album.is_some()
-        || meta.date.is_some()
-        || meta.genre.is_some();
-    if has_meta { 4 } else { 3 }
+/// Return the height needed for the compact Now Playing bar, accounting for line wrapping.
+pub fn now_playing_height(
+    meta: &TrackMeta,
+    file_name: &str,
+    track_pos: Option<(usize, usize)>,
+    width: u16,
+) -> u16 {
+    let inner_w = width.saturating_sub(2) as usize;
+    if inner_w == 0 {
+        return 3;
+    }
+
+    // Line 1: status + filename + track position
+    let mut title_spans = vec![
+        Span::raw(" Playing "),
+        Span::raw("  "),
+        Span::raw(file_name.to_string()),
+    ];
+    if let Some((cur, total)) = track_pos {
+        title_spans.push(Span::raw(format!("  {cur}/{total}")));
+    }
+    let line1_w = Line::from(title_spans).width();
+    let line1_rows = ((line1_w + inner_w - 1) / inner_w).max(1);
+
+    // Line 2: metadata
+    let mut meta_parts: Vec<&str> = Vec::new();
+    if let Some(ref a) = meta.artist {
+        meta_parts.push(a);
+    }
+    if let Some(ref a) = meta.album {
+        meta_parts.push(a);
+    }
+    if let Some(ref d) = meta.date {
+        meta_parts.push(d);
+    }
+    if let Some(ref g) = meta.genre {
+        meta_parts.push(g);
+    }
+    let line2_rows = if meta_parts.is_empty() {
+        0
+    } else {
+        let meta_str = meta_parts.join("  \u{00b7}  ");
+        let line2_w = Line::from(vec![Span::raw("         "), Span::raw(meta_str)]).width();
+        ((line2_w + inner_w - 1) / inner_w).max(1)
+    };
+
+    (line1_rows + line2_rows) as u16 + 2
 }
 
 /// Render album art as a small overlay on the top-left corner of a given area,
@@ -187,11 +227,13 @@ pub fn draw_now_playing_bar(
             ),
         ]));
     }
-    let title = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(" Now Playing "),
-    );
+    let title = Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Now Playing "),
+        );
     frame.render_widget(title, area);
 }

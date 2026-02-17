@@ -16,6 +16,7 @@ A terminal music player written in Rust.
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic equalizer with presets (press `e`) — real-time biquad filtering
 - Waveform preview on seek bar (progressive background scan, block character rendering)
+- Responsive layout (controls and metadata wrap to multiple lines on narrow terminals)
 - Persistent settings (volume, visualizer mode, lyrics visibility, EQ, crossfade)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
 
