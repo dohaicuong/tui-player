@@ -370,6 +370,7 @@ struct App {
     shuffle_order: Vec<usize>,
     progress_hover_col: Option<u16>,
     volume_hover_col: Option<u16>,
+    dragging: bool,
     eq_hover_band: Option<usize>,
     waveform: SharedWaveform,
     crossfade_duration: f32,
@@ -751,6 +752,7 @@ impl App {
             shuffle_order: Vec::new(),
             progress_hover_col: None,
             volume_hover_col: None,
+            dragging: false,
             eq_hover_band: None,
             waveform: {
                 let wf: SharedWaveform = Arc::new(Mutex::new(Vec::new()));
@@ -830,6 +832,7 @@ impl App {
             shuffle_order: Vec::new(),
             progress_hover_col: None,
             volume_hover_col: None,
+            dragging: false,
             eq_hover_band: None,
             waveform: Arc::new(Mutex::new(Vec::new())),
             crossfade_duration: load_crossfade(),
@@ -1866,6 +1869,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             if hit(app.regions.now_playing, col, row) {
                                 app.toggle_pause();
                             } else if hit(app.regions.progress, col, row) {
+                                app.progress_hover_col = Some(col);
                                 if let Some(total) = app.total_duration {
                                     let inner_x =
                                         col.saturating_sub(app.regions.progress.x + 1);
@@ -1880,6 +1884,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                     }
                                 }
                             } else if hit(app.regions.volume, col, row) {
+                                app.volume_hover_col = Some(col);
                                 let inner_x =
                                     col.saturating_sub(app.regions.volume.x + 1);
                                 let inner_w =
@@ -1898,6 +1903,49 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             } else if hit(app.regions.visualizer, col, row) {
                                 app.vis_mode = app.vis_mode.next();
                                 save_vis_mode(app.vis_mode);
+                            }
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            app.dragging = true;
+                            if hit(app.regions.progress, col, row) {
+                                app.progress_hover_col = Some(col);
+                            } else {
+                                app.progress_hover_col = None;
+                            }
+                            if hit(app.regions.volume, col, row) {
+                                app.volume_hover_col = Some(col);
+                            } else {
+                                app.volume_hover_col = None;
+                            }
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            if app.dragging {
+                                app.dragging = false;
+                                if let Some(hc) = app.progress_hover_col.take() {
+                                    if let Some(total) = app.total_duration {
+                                        let inner_x =
+                                            hc.saturating_sub(app.regions.progress.x + 1);
+                                        let inner_w =
+                                            app.regions.progress.width.saturating_sub(2);
+                                        if inner_w > 0 {
+                                            let frac = inner_x as f64 / inner_w as f64;
+                                            let target = Duration::from_secs_f64(
+                                                frac * total.as_secs_f64(),
+                                            );
+                                            app.seek_to(target);
+                                        }
+                                    }
+                                }
+                                if let Some(hc) = app.volume_hover_col.take() {
+                                    let inner_x =
+                                        hc.saturating_sub(app.regions.volume.x + 1);
+                                    let inner_w =
+                                        app.regions.volume.width.saturating_sub(2);
+                                    if inner_w > 0 {
+                                        let frac = inner_x as f64 / inner_w as f64;
+                                        app.set_volume(frac as f32 * 2.0);
+                                    }
+                                }
                             }
                         }
                         MouseEventKind::Moved => {
@@ -2164,6 +2212,56 @@ fn draw(frame: &mut Frame, app: &mut App) {
         );
 
         volume::draw_volume(frame, chunks[2], app.volume, theme);
+
+        // Hover time tooltip on progress bar top border
+        if let (Some(hover_col), Some(total)) = (app.progress_hover_col, app.total_duration) {
+            let prog = chunks[1];
+            let inner_x = hover_col.saturating_sub(prog.x + 1);
+            let inner_w = prog.width.saturating_sub(2);
+            if inner_w > 0 && !total.is_zero() {
+                let frac = (inner_x as f64 / inner_w as f64).clamp(0.0, 1.0);
+                let hover_secs = (frac * total.as_secs_f64()) as u64;
+                let label = format!(" {}:{:02} ", hover_secs / 60, hover_secs % 60);
+                let label_len = label.len() as u16;
+                let start_x = hover_col
+                    .saturating_sub(label_len / 2)
+                    .max(prog.x)
+                    .min(prog.x + prog.width.saturating_sub(label_len));
+                let hover_rect = Rect::new(start_x, prog.y, label_len, 1);
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        label,
+                        Style::default().fg(theme.secondary),
+                    )),
+                    hover_rect,
+                );
+            }
+        }
+
+        // Hover volume tooltip on volume bar top border
+        if let Some(hover_col) = app.volume_hover_col {
+            let vol = chunks[2];
+            let inner_x = hover_col.saturating_sub(vol.x + 1);
+            let inner_w = vol.width.saturating_sub(2);
+            if inner_w > 0 {
+                let frac = (inner_x as f64 / inner_w as f64).clamp(0.0, 1.0);
+                let hover_pct = (frac * 200.0).round() as u16;
+                let label = format!(" {}% ", hover_pct);
+                let label_len = label.len() as u16;
+                let start_x = hover_col
+                    .saturating_sub(label_len / 2)
+                    .max(vol.x)
+                    .min(vol.x + vol.width.saturating_sub(label_len));
+                let hover_rect = Rect::new(start_x, vol.y, label_len, 1);
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        label,
+                        Style::default().fg(theme.secondary),
+                    )),
+                    hover_rect,
+                );
+            }
+        }
     } else {
         let track_pos = {
             let files = file_browser::collect_audio_files(&app.browser_items);

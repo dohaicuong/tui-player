@@ -10,4 +10,5 @@
 - [ ] Last.fm / ListenBrainz scrobbling
 - [ ] M3U playlist import/export
 - [x] Mini mode (ultra-compact single-line display)
+- [x] Mouse drag to seek and adjust volume
 - [ ] Stereo balance (left/right pan control)

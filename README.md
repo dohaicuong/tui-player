@@ -8,7 +8,7 @@ A terminal music player written in Rust.
 - 3 visualizer modes: oscilloscope, vectorscope, spectroscope (braille Unicode)
 - Lyrics fetching from lyrics.ovh and Genius
 - Album art overlay on visualizer (semi-transparent half-block rendering)
-- Mouse support (click to seek, adjust volume, toggle lyrics, scroll, hover tooltips on seek/volume/EQ)
+- Mouse support (click/drag to seek and adjust volume, toggle lyrics, scroll, hover tooltips on seek/volume/EQ)
 - File browser with tree navigation (press `f`) — accepts directories as input, fuzzy search with `/`
 - Shuffle and repeat modes (Off / All / One)
 - Gapless playback with pre-buffered next track (or crossfade with `c` key — Off / 2s / 5s / 8s)
