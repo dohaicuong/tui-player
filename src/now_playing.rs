@@ -1,4 +1,6 @@
-use std::{sync::mpsc, thread};
+use std::{fs, path::PathBuf, sync::mpsc, thread};
+
+use crate::{cache_hash, config_dir};
 
 use ratatui::{
     buffer::Buffer,
@@ -17,8 +19,25 @@ pub const ART_COLS: u16 = ART_ROWS * 2; // 2 cols per row for square aspect
 // Album art pixel grid: rows of (R, G, B) tuples
 pub type ArtPixels = Vec<Vec<(u8, u8, u8)>>;
 
+fn art_cache_path(url: &str) -> PathBuf {
+    config_dir()
+        .join("cache")
+        .join("art")
+        .join(cache_hash(url))
+}
+
 pub fn fetch_album_art(url: &str, cols: u16, rows: u16) -> Option<ArtPixels> {
-    let bytes = ureq::get(url).call().ok()?.body_mut().read_to_vec().ok()?;
+    let cache_path = art_cache_path(url);
+    let bytes = if let Ok(cached) = fs::read(&cache_path) {
+        cached
+    } else {
+        let downloaded = ureq::get(url).call().ok()?.body_mut().read_to_vec().ok()?;
+        if let Some(parent) = cache_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&cache_path, &downloaded);
+        downloaded
+    };
     let img = image::load_from_memory(&bytes).ok()?;
     let px_w = cols as u32;
     let px_h = (rows as u32) * 2; // half-block = 2 pixels per row

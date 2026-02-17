@@ -376,9 +376,22 @@ impl App {
     }
 }
 
-fn config_dir() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     let home = env::var("HOME").expect("HOME not set");
     PathBuf::from(home).join(".config").join("tui-player")
+}
+
+pub fn cache_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3); // FNV-1a prime
+    }
+    format!("{h:016x}")
+}
+
+fn clear_cache() {
+    let _ = fs::remove_dir_all(config_dir().join("cache"));
 }
 
 fn load_volume() -> f32 {
@@ -1584,6 +1597,35 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                     app.sink.stop();
                                     let pos = app.position();
                                     app.seek_to(pos);
+                                }
+                            }
+                            KeyCode::Char('x') => {
+                                clear_cache();
+                                if app.track_loaded {
+                                    // Re-fetch lyrics and art for current track
+                                    app.lyrics = None;
+                                    app.lyrics_scroll = 0;
+                                    app.lyrics_loading = false;
+                                    app.lyrics_url.clear();
+                                    app.lyrics_rx = None;
+                                    app.album_art = None;
+                                    app.art_rx = None;
+                                    let lyrics_artist =
+                                        app.meta.artist.clone().unwrap_or_default();
+                                    let lyrics_title =
+                                        app.meta.title.clone().unwrap_or_else(|| {
+                                            app.file_path
+                                                .file_stem()
+                                                .map(|s| s.to_string_lossy().to_string())
+                                                .unwrap_or_default()
+                                        });
+                                    if !lyrics_title.is_empty() {
+                                        app.lyrics_rx = Some(spawn_lyrics_fetchers(
+                                            lyrics_artist,
+                                            lyrics_title,
+                                        ));
+                                        app.lyrics_loading = true;
+                                    }
                                 }
                             }
                             KeyCode::Char('c') => {

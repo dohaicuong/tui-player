@@ -1,4 +1,6 @@
-use std::{sync::mpsc, thread};
+use std::{fs, path::PathBuf, sync::mpsc, thread};
+
+use crate::{cache_hash, config_dir};
 
 use ratatui::{
     layout::Rect,
@@ -188,20 +190,65 @@ fn fetch_lyrics_genius(artist: &str, title: &str) -> Option<LyricsResult> {
     if text.is_empty() { None } else { Some(LyricsResult { text, url: song_url, art_url }) }
 }
 
+fn lyrics_cache_path(artist: &str, title: &str) -> PathBuf {
+    let key = format!("{}\0{}", artist.to_lowercase(), title.to_lowercase());
+    config_dir()
+        .join("cache")
+        .join("lyrics")
+        .join(format!("{}.json", cache_hash(&key)))
+}
+
+fn load_cached_lyrics(artist: &str, title: &str) -> Option<LyricsResult> {
+    let data = fs::read_to_string(lyrics_cache_path(artist, title)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    Some(LyricsResult {
+        text: v["text"].as_str()?.to_string(),
+        url: v["url"].as_str()?.to_string(),
+        art_url: v["art_url"].as_str().map(|s| s.to_string()),
+    })
+}
+
+fn save_lyrics_cache(artist: &str, title: &str, result: &LyricsResult) {
+    let path = lyrics_cache_path(artist, title);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let json = serde_json::json!({
+        "text": result.text,
+        "url": result.url,
+        "art_url": result.art_url,
+    });
+    let _ = fs::write(path, json.to_string());
+}
+
 pub fn spawn_lyrics_fetchers(artist: String, title: String) -> mpsc::Receiver<Option<LyricsResult>> {
     let (tx, rx) = mpsc::channel();
+
+    // Check cache first
+    if let Some(cached) = load_cached_lyrics(&artist, &title) {
+        let _ = tx.send(Some(cached));
+        return rx;
+    }
 
     // Spawn one thread per source — first Some result wins
     let tx1 = tx.clone();
     let a1 = artist.clone();
     let t1 = title.clone();
     thread::spawn(move || {
-        let _ = tx1.send(fetch_lyrics_ovh(&a1, &t1));
+        let result = fetch_lyrics_ovh(&a1, &t1);
+        if let Some(ref lr) = result {
+            save_lyrics_cache(&a1, &t1, lr);
+        }
+        let _ = tx1.send(result);
     });
 
     let tx2 = tx;
     thread::spawn(move || {
-        let _ = tx2.send(fetch_lyrics_genius(&artist, &title));
+        let result = fetch_lyrics_genius(&artist, &title);
+        if let Some(ref lr) = result {
+            save_lyrics_cache(&artist, &title, lr);
+        }
+        let _ = tx2.send(result);
     });
 
     rx
