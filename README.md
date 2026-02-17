@@ -9,7 +9,7 @@ A terminal music player written in Rust.
 - Lyrics fetching from lyrics.ovh and Genius
 - Album art display (half-block rendering)
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll)
-- File browser with tree navigation (press `f`) — accepts directories as input
+- File browser with tree navigation (press `f`) — accepts directories as input, fuzzy search with `/`
 - Auto-advances to the next track when a song finishes
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic equalizer with presets (press `e`) — real-time biquad filtering

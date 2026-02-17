@@ -41,7 +41,7 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - Lyrics fetching from lyrics.ovh + Genius web scraping
 - Album art from Genius search results (half-block rendering)
 - Mouse support (click seek, volume, play/pause, lyrics toggle, scroll)
-- File browser tree overlay (f key) — browse directories, select tracks, switch playback
+- File browser tree overlay (f key) — browse directories, select tracks, switch playback, fuzzy search (/)
 - Auto-advance: plays next track in directory when current song finishes
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic EQ overlay (e key) — biquad PeakingEQ filters, 11 presets, ±12 dB per band, real-time DSP

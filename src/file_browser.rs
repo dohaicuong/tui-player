@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
-    widgets::{Block, BorderType, Borders, Clear},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState},
     Frame,
 };
 use tui_tree_widget::{Tree, TreeItem, TreeState};
@@ -66,6 +67,38 @@ pub fn collect_audio_files(items: &[TreeItem<'static, PathBuf>]) -> Vec<PathBuf>
     files
 }
 
+/// Fuzzy match: query chars must appear in order (case-insensitive).
+fn fuzzy_match(query: &str, haystack: &str) -> bool {
+    let mut chars = query.chars().flat_map(|c| c.to_lowercase());
+    let mut current = match chars.next() {
+        Some(c) => c,
+        None => return true,
+    };
+    for h in haystack.chars().flat_map(|c| c.to_lowercase()) {
+        if h == current {
+            current = match chars.next() {
+                Some(c) => c,
+                None => return true,
+            };
+        }
+    }
+    false
+}
+
+/// Filter audio files by fuzzy matching against filenames. Returns matching paths.
+pub fn filter_files(items: &[TreeItem<'static, PathBuf>], query: &str) -> Vec<PathBuf> {
+    let all = collect_audio_files(items);
+    if query.is_empty() {
+        return all;
+    }
+    all.into_iter()
+        .filter(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            fuzzy_match(query, &name)
+        })
+        .collect()
+}
+
 pub fn selected_file(state: &TreeState<PathBuf>) -> Option<PathBuf> {
     let selected = state.selected();
     let path = selected.last()?;
@@ -76,36 +109,98 @@ pub fn selected_file(state: &TreeState<PathBuf>) -> Option<PathBuf> {
     }
 }
 
-pub fn draw_file_browser(
-    frame: &mut Frame,
-    items: &[TreeItem<'static, PathBuf>],
-    state: &mut TreeState<PathBuf>,
-) {
+fn popup_area(frame: &Frame) -> Rect {
     let area = frame.area();
     let popup_width = (area.width * 80 / 100).max(40).min(area.width);
     let popup_height = (area.height * 80 / 100).max(10).min(area.height);
     let popup_x = area.width.saturating_sub(popup_width) / 2;
     let popup_y = area.height.saturating_sub(popup_height) / 2;
-    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    Rect::new(popup_x, popup_y, popup_width, popup_height)
+}
 
-    frame.render_widget(Clear, popup_area);
+pub fn draw_file_browser(
+    frame: &mut Frame,
+    items: &[TreeItem<'static, PathBuf>],
+    state: &mut TreeState<PathBuf>,
+    searching: bool,
+    search: &str,
+    filtered: &[PathBuf],
+    filter_idx: usize,
+    root_dir: Option<&Path>,
+) {
+    let popup = popup_area(frame);
+    frame.render_widget(Clear, popup);
 
-    let tree = Tree::new(items)
-        .expect("unique identifiers")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title(" Files ")
-                .title_bottom(" Enter: Play  ←/→: Expand  Esc: Close "),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
+    if !searching {
+        // Normal tree view
+        let tree = Tree::new(items)
+            .expect("unique identifiers")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title(" Files ")
+                    .title_bottom(" Enter: Play  ←/→: Expand  /: Search  Esc: Close "),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
 
-    frame.render_stateful_widget(tree, popup_area, state);
+        frame.render_stateful_widget(tree, popup, state);
+    } else {
+        // Search mode: list with search query in bottom border
+        let list_items: Vec<ListItem> = filtered
+            .iter()
+            .map(|p| {
+                let display = root_dir
+                    .and_then(|r| p.strip_prefix(r).ok())
+                    .map(|rel| rel.to_string_lossy().to_string())
+                    .unwrap_or_else(|| {
+                        p.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    });
+                ListItem::new(display)
+            })
+            .collect();
+
+        let match_count = filtered.len();
+        let bottom_title = Line::from(vec![
+            Span::styled(" / ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                format!(" {search}█"),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                format!("  ({match_count} matches) "),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        let list = List::new(list_items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title(" Files ")
+                    .title_bottom(bottom_title),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
+
+        let mut list_state = ListState::default();
+        if !filtered.is_empty() {
+            list_state.select(Some(filter_idx));
+        }
+        frame.render_stateful_widget(list, popup, &mut list_state);
+    }
 }

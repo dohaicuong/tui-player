@@ -210,6 +210,10 @@ struct App {
     browser_open: bool,
     browser_state: TreeState<PathBuf>,
     browser_items: Vec<TreeItem<'static, PathBuf>>,
+    browser_searching: bool,
+    browser_search: String,
+    browser_filtered: Vec<PathBuf>,
+    browser_filter_idx: usize,
     track_loaded: bool,
     eq_open: bool,
     eq_params: eq::SharedEqParams,
@@ -457,6 +461,10 @@ impl App {
             browser_open: false,
             browser_state: TreeState::default(),
             browser_items,
+            browser_searching: false,
+            browser_search: String::new(),
+            browser_filtered: Vec::new(),
+            browser_filter_idx: 0,
             track_loaded: true,
             eq_open: false,
             eq_params,
@@ -509,6 +517,10 @@ impl App {
             browser_open: true,
             browser_state,
             browser_items,
+            browser_searching: false,
+            browser_search: String::new(),
+            browser_filtered: Vec::new(),
+            browser_filter_idx: 0,
             track_loaded: false,
             eq_open: false,
             eq_params,
@@ -779,35 +791,99 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                     }
 
                     if app.browser_open {
-                        match key.code {
-                            KeyCode::Up => {
-                                app.browser_state.key_up();
-                            }
-                            KeyCode::Down => {
-                                app.browser_state.key_down();
-                            }
-                            KeyCode::Left => {
-                                app.browser_state.key_left();
-                            }
-                            KeyCode::Right => {
-                                app.browser_state.key_right();
-                            }
-                            KeyCode::Enter => {
-                                if let Some(path) =
-                                    file_browser::selected_file(&app.browser_state)
-                                {
-                                    app.switch_track(&path);
-                                    app.browser_open = false;
-                                } else {
-                                    app.browser_state.toggle_selected();
+                        if app.browser_searching {
+                            // Search mode keys
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.browser_searching = false;
+                                    app.browser_search.clear();
+                                    app.browser_filtered.clear();
+                                    app.browser_filter_idx = 0;
                                 }
-                            }
-                            KeyCode::Esc | KeyCode::Char('f') => {
-                                if app.track_loaded {
-                                    app.browser_open = false;
+                                KeyCode::Backspace => {
+                                    app.browser_search.pop();
+                                    app.browser_filtered = file_browser::filter_files(
+                                        &app.browser_items,
+                                        &app.browser_search,
+                                    );
+                                    if app.browser_filter_idx >= app.browser_filtered.len() {
+                                        app.browser_filter_idx =
+                                            app.browser_filtered.len().saturating_sub(1);
+                                    }
                                 }
+                                KeyCode::Up => {
+                                    app.browser_filter_idx =
+                                        app.browser_filter_idx.saturating_sub(1);
+                                }
+                                KeyCode::Down => {
+                                    if !app.browser_filtered.is_empty() {
+                                        app.browser_filter_idx = (app.browser_filter_idx + 1)
+                                            .min(app.browser_filtered.len() - 1);
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(path) =
+                                        app.browser_filtered.get(app.browser_filter_idx).cloned()
+                                    {
+                                        app.switch_track(&path);
+                                        app.browser_open = false;
+                                        app.browser_searching = false;
+                                        app.browser_search.clear();
+                                        app.browser_filtered.clear();
+                                        app.browser_filter_idx = 0;
+                                    }
+                                }
+                                KeyCode::Char(c) => {
+                                    app.browser_search.push(c);
+                                    app.browser_filtered = file_browser::filter_files(
+                                        &app.browser_items,
+                                        &app.browser_search,
+                                    );
+                                    app.browser_filter_idx = 0;
+                                }
+                                _ => {}
                             }
-                            _ => {}
+                        } else {
+                            // Normal tree mode keys
+                            match key.code {
+                                KeyCode::Up => {
+                                    app.browser_state.key_up();
+                                }
+                                KeyCode::Down => {
+                                    app.browser_state.key_down();
+                                }
+                                KeyCode::Left => {
+                                    app.browser_state.key_left();
+                                }
+                                KeyCode::Right => {
+                                    app.browser_state.key_right();
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(path) =
+                                        file_browser::selected_file(&app.browser_state)
+                                    {
+                                        app.switch_track(&path);
+                                        app.browser_open = false;
+                                    } else {
+                                        app.browser_state.toggle_selected();
+                                    }
+                                }
+                                KeyCode::Char('/') => {
+                                    app.browser_searching = true;
+                                    app.browser_search.clear();
+                                    app.browser_filtered = file_browser::filter_files(
+                                        &app.browser_items,
+                                        "",
+                                    );
+                                    app.browser_filter_idx = 0;
+                                }
+                                KeyCode::Esc | KeyCode::Char('f') => {
+                                    if app.track_loaded {
+                                        app.browser_open = false;
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     } else if app.eq_open {
                         match key.code {
@@ -1116,7 +1192,16 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
     // Overlays (rendered on top)
     if app.browser_open {
-        file_browser::draw_file_browser(frame, &app.browser_items, &mut app.browser_state);
+        file_browser::draw_file_browser(
+            frame,
+            &app.browser_items,
+            &mut app.browser_state,
+            app.browser_searching,
+            &app.browser_search,
+            &app.browser_filtered,
+            app.browser_filter_idx,
+            app.root_dir.as_deref(),
+        );
     }
     if app.eq_open {
         let params = app.eq_params.lock().unwrap();
