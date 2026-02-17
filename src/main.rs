@@ -36,6 +36,7 @@ use visualizer::VisMode;
 mod lyrics;
 use lyrics::{spawn_lyrics_fetchers, LyricsResult};
 
+mod eq;
 mod file_browser;
 mod gauge;
 mod progress;
@@ -47,24 +48,45 @@ const PIPE_PATH: &str = "/tmp/tui-player.pipe";
 pub type SampleBuf = Arc<Mutex<VecDeque<f32>>>;
 const SAMPLE_BUF_SIZE: usize = 8192;
 
-// Source wrapper that writes to pipe and captures samples for visualization
+// Source wrapper that applies EQ, writes to pipe, and captures samples for visualization
 struct PipedSource<S> {
     inner: S,
     pipe: Option<fs::File>,
     pipe_ready: Arc<AtomicBool>,
     samples: SampleBuf,
+    eq_params: eq::SharedEqParams,
+    eq_filters: eq::EqFilters,
+    channel_idx: u16,
+    channels: u16,
+    update_counter: u32,
 }
 
 impl<S> PipedSource<S>
 where
     S: Source<Item = f32>,
 {
-    fn new(source: S, pipe_ready: Arc<AtomicBool>, samples: SampleBuf) -> Self {
+    fn new(
+        source: S,
+        pipe_ready: Arc<AtomicBool>,
+        samples: SampleBuf,
+        eq_params: eq::SharedEqParams,
+        channels: u16,
+        sample_rate: u32,
+    ) -> Self {
+        let eq_filters = {
+            let params = eq_params.lock().unwrap();
+            eq::EqFilters::new(channels, sample_rate as f32, &params)
+        };
         PipedSource {
             inner: source,
             pipe: None,
             pipe_ready,
             samples,
+            eq_params,
+            eq_filters,
+            channel_idx: 0,
+            channels,
+            update_counter: 0,
         }
     }
 
@@ -88,7 +110,20 @@ where
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        let sample = self.inner.next()?;
+        let raw = self.inner.next()?;
+
+        // Periodically check for EQ parameter changes (every 4096 samples)
+        self.update_counter += 1;
+        if self.update_counter >= 4096 {
+            self.update_counter = 0;
+            if let Ok(params) = self.eq_params.try_lock() {
+                self.eq_filters.update_if_changed(&params);
+            }
+        }
+
+        // Apply EQ
+        let sample = self.eq_filters.process(raw, self.channel_idx as usize);
+        self.channel_idx = (self.channel_idx + 1) % self.channels;
 
         // Write to pipe for external scope-tui
         self.ensure_pipe();
@@ -176,6 +211,9 @@ struct App {
     browser_state: TreeState<PathBuf>,
     browser_items: Vec<TreeItem<'static, PathBuf>>,
     track_loaded: bool,
+    eq_open: bool,
+    eq_params: eq::SharedEqParams,
+    eq_selected_band: usize,
 }
 
 impl App {
@@ -355,12 +393,21 @@ impl App {
 
         let pipe_ready = Arc::new(AtomicBool::new(true));
         let samples: SampleBuf = Arc::new(Mutex::new(VecDeque::with_capacity(SAMPLE_BUF_SIZE)));
+        let eq_params = Arc::new(Mutex::new(eq::load_eq()));
 
         let file = fs::File::open(path).expect("failed to open file");
         let buf = io::BufReader::new(file);
         let source = Decoder::new(buf).expect("failed to decode audio file");
         let channels = source.channels();
-        let piped = PipedSource::new(source, Arc::clone(&pipe_ready), Arc::clone(&samples));
+        let sample_rate = source.sample_rate();
+        let piped = PipedSource::new(
+            source,
+            Arc::clone(&pipe_ready),
+            Arc::clone(&samples),
+            Arc::clone(&eq_params),
+            channels,
+            sample_rate,
+        );
         sink.append(piped);
 
         // Spawn background lyrics fetch from multiple sources
@@ -411,6 +458,9 @@ impl App {
             browser_state: TreeState::default(),
             browser_items,
             track_loaded: true,
+            eq_open: false,
+            eq_params,
+            eq_selected_band: 0,
         }
     }
 
@@ -425,6 +475,7 @@ impl App {
 
         let pipe_ready = Arc::new(AtomicBool::new(true));
         let samples: SampleBuf = Arc::new(Mutex::new(VecDeque::with_capacity(SAMPLE_BUF_SIZE)));
+        let eq_params = Arc::new(Mutex::new(eq::load_eq()));
 
         let browser_items = file_browser::scan_directory(&root_dir);
         let mut browser_state = TreeState::default();
@@ -459,6 +510,9 @@ impl App {
             browser_state,
             browser_items,
             track_loaded: false,
+            eq_open: false,
+            eq_params,
+            eq_selected_band: 0,
         }
     }
 
@@ -483,7 +537,15 @@ impl App {
         let buf = io::BufReader::new(file);
         let source = Decoder::new(buf).expect("failed to decode audio file");
         self.channels = source.channels();
-        let piped = PipedSource::new(source, Arc::clone(&self.pipe_ready), Arc::clone(&self.samples));
+        let sample_rate = source.sample_rate();
+        let piped = PipedSource::new(
+            source,
+            Arc::clone(&self.pipe_ready),
+            Arc::clone(&self.samples),
+            Arc::clone(&self.eq_params),
+            self.channels,
+            sample_rate,
+        );
         new_sink.append(piped);
         self.sink = new_sink;
 
@@ -557,8 +619,16 @@ impl App {
         let file = fs::File::open(&self.file_path).expect("failed to open file");
         let buf = io::BufReader::new(file);
         let mut source = Decoder::new(buf).expect("failed to decode audio file");
+        let sample_rate = source.sample_rate();
         let _ = source.try_seek(clamped);
-        let piped = PipedSource::new(source, Arc::clone(&self.pipe_ready), Arc::clone(&self.samples));
+        let piped = PipedSource::new(
+            source,
+            Arc::clone(&self.pipe_ready),
+            Arc::clone(&self.samples),
+            Arc::clone(&self.eq_params),
+            self.channels,
+            sample_rate,
+        );
         new_sink.append(piped);
 
         if self.paused {
@@ -722,6 +792,56 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             }
                             _ => {}
                         }
+                    } else if app.eq_open {
+                        match key.code {
+                            KeyCode::Left => {
+                                app.eq_selected_band =
+                                    app.eq_selected_band.saturating_sub(1);
+                            }
+                            KeyCode::Right => {
+                                app.eq_selected_band =
+                                    (app.eq_selected_band + 1).min(eq::NUM_BANDS - 1);
+                            }
+                            KeyCode::Up => {
+                                if let Ok(mut params) = app.eq_params.lock() {
+                                    let g = &mut params.gains[app.eq_selected_band];
+                                    *g = (*g + 1.0).min(12.0);
+                                    eq::save_eq(&params);
+                                }
+                            }
+                            KeyCode::Down => {
+                                if let Ok(mut params) = app.eq_params.lock() {
+                                    let g = &mut params.gains[app.eq_selected_band];
+                                    *g = (*g - 1.0).max(-12.0);
+                                    eq::save_eq(&params);
+                                }
+                            }
+                            KeyCode::Char('p') => {
+                                if let Ok(mut params) = app.eq_params.lock() {
+                                    params.preset_index =
+                                        (params.preset_index + 1) % eq::PRESETS.len();
+                                    params.gains = eq::PRESETS[params.preset_index].1;
+                                    eq::save_eq(&params);
+                                }
+                            }
+                            KeyCode::Char('0') => {
+                                if let Ok(mut params) = app.eq_params.lock() {
+                                    params.gains = [0.0; eq::NUM_BANDS];
+                                    params.preset_index = 0;
+                                    eq::save_eq(&params);
+                                }
+                            }
+                            KeyCode::Char('s') => {
+                                if let Ok(mut params) = app.eq_params.lock() {
+                                    params.enabled = !params.enabled;
+                                    eq::save_eq(&params);
+                                }
+                            }
+                            KeyCode::Esc | KeyCode::Char('e') => {
+                                app.eq_open = false;
+                            }
+                            _ => {}
+                        }
                     } else {
                         match key.code {
                             KeyCode::Char(' ') => {
@@ -760,11 +880,14 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                     app.browser_open = true;
                                 }
                             }
+                            KeyCode::Char('e') => {
+                                app.eq_open = true;
+                            }
                             _ => {}
                         }
                     }
                 }
-                Event::Mouse(mouse) if !app.browser_open => {
+                Event::Mouse(mouse) if !app.browser_open && !app.eq_open => {
                     let col = mouse.column;
                     let row = mouse.row;
                     match mouse.kind {
@@ -947,8 +1070,12 @@ fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // File browser overlay (rendered on top)
+    // Overlays (rendered on top)
     if app.browser_open {
         file_browser::draw_file_browser(frame, &app.browser_items, &mut app.browser_state);
+    }
+    if app.eq_open {
+        let params = app.eq_params.lock().unwrap();
+        eq::draw_eq(frame, &params, app.eq_selected_band);
     }
 }
