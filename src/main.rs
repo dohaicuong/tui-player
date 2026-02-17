@@ -20,7 +20,7 @@ use symphonia::core::{
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MediaKeyCode, MouseButton, MouseEventKind};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::Span,
     widgets::Paragraph,
     DefaultTerminal, Frame,
@@ -42,6 +42,8 @@ mod gauge;
 mod progress;
 mod volume;
 mod controls;
+pub mod theme;
+use theme::{Theme, THEMES};
 
 const PIPE_PATH: &str = "/tmp/tui-player.pipe";
 
@@ -372,11 +374,17 @@ struct App {
     waveform: SharedWaveform,
     crossfade_duration: f32,
     crossfade: Option<CrossfadeState>,
+    theme_idx: usize,
+    theme_open: bool,
 }
 
 impl App {
     fn position(&self) -> Duration {
         self.seek_base + self.sink.get_pos()
+    }
+
+    fn theme(&self) -> &'static Theme {
+        &THEMES[self.theme_idx]
     }
 }
 
@@ -739,6 +747,8 @@ impl App {
             },
             crossfade_duration: load_crossfade(),
             crossfade: None,
+            theme_idx: theme::load_theme(),
+            theme_open: false,
         }
     }
 
@@ -809,6 +819,8 @@ impl App {
             waveform: Arc::new(Mutex::new(Vec::new())),
             crossfade_duration: load_crossfade(),
             crossfade: None,
+            theme_idx: theme::load_theme(),
+            theme_open: false,
         }
     }
 
@@ -1595,6 +1607,25 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             }
                             _ => {}
                         }
+                    } else if app.theme_open {
+                        match key.code {
+                            KeyCode::Up => {
+                                app.theme_idx = if app.theme_idx == 0 {
+                                    THEMES.len() - 1
+                                } else {
+                                    app.theme_idx - 1
+                                };
+                                theme::save_theme(app.theme_idx);
+                            }
+                            KeyCode::Down => {
+                                app.theme_idx = (app.theme_idx + 1) % THEMES.len();
+                                theme::save_theme(app.theme_idx);
+                            }
+                            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('t') => {
+                                app.theme_open = false;
+                            }
+                            _ => {}
+                        }
                     } else if app.info_open {
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('i') => {
@@ -1717,6 +1748,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             }
                             KeyCode::Char('i') => {
                                 app.info_open = !app.info_open;
+                            }
+                            KeyCode::Char('t') => {
+                                app.theme_open = true;
                             }
                             KeyCode::Char('c') => {
                                 let idx = CROSSFADE_OPTIONS
@@ -1935,15 +1969,15 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     Ok(())
 }
 
-fn draw_track_info(frame: &mut Frame, app: &App) {
+fn draw_track_info(frame: &mut Frame, app: &App, theme: &Theme) {
     use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
     let mut lines: Vec<ratatui::text::Line> = Vec::new();
 
     let label = |key: &str, val: &str| -> ratatui::text::Line<'static> {
         ratatui::text::Line::from(vec![
-            Span::styled(format!("{key}: "), Style::default().fg(Color::Yellow)),
-            Span::styled(val.to_string(), Style::default().fg(Color::White)),
+            Span::styled(format!("{key}: "), Style::default().fg(theme.secondary)),
+            Span::styled(val.to_string(), Style::default().fg(theme.text)),
         ])
     };
 
@@ -2042,18 +2076,19 @@ fn draw_track_info(frame: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title(" Track Info ")
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(theme.accent)),
         );
     frame.render_widget(popup, popup_rect);
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     if !app.track_loaded {
         // Idle screen — no track playing yet
         let area = frame.area();
         let msg = Paragraph::new(Span::styled(
             "No track playing — select a file from the browser",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.dimmed),
         ))
         .alignment(Alignment::Center);
         let y = area.height / 2;
@@ -2086,6 +2121,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             app.shuffle,
             app.repeat_mode.label(),
             &crossfade_label,
+            theme,
         );
 
         let show_middle = app.show_visualizer || app.lyrics_visible;
@@ -2117,6 +2153,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             &app.file_name,
             &app.meta,
             track_pos,
+            theme,
         );
 
         if show_middle {
@@ -2149,7 +2186,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 Rect::new(lyrics_rect.x, lyrics_rect.y, lyrics_rect.width, 1);
 
             if let Some(va) = vis_area {
-                visualizer::draw_visualizer(frame, va, app.vis_mode, &app.samples, app.channels);
+                visualizer::draw_visualizer(frame, va, app.vis_mode, &app.samples, app.channels, theme);
                 if let Some(ref pixels) = app.album_art {
                     draw_art_overlay(frame, va, pixels, 0.75);
                 }
@@ -2163,9 +2200,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
                     &app.lyrics_url,
                     app.lyrics_loading,
                     &mut app.lyrics_scroll,
+                    theme,
                 );
             } else if app.show_visualizer {
-                lyrics::draw_lyrics_collapsed(frame, lyrics_rect);
+                lyrics::draw_lyrics_collapsed(frame, lyrics_rect, theme);
             }
         }
 
@@ -2188,6 +2226,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             app.position(),
             app.total_duration,
             waveform_normalized.as_deref(),
+            theme,
         );
 
         // Hover time tooltip on progress bar top border
@@ -2208,14 +2247,14 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 frame.render_widget(
                     Paragraph::new(Span::styled(
                         label,
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(theme.secondary),
                     )),
                     hover_rect,
                 );
             }
         }
 
-        volume::draw_volume(frame, chunks[3], app.volume);
+        volume::draw_volume(frame, chunks[3], app.volume, theme);
 
         // Hover volume tooltip on volume bar top border
         if let Some(hover_col) = app.volume_hover_col {
@@ -2235,7 +2274,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 frame.render_widget(
                     Paragraph::new(Span::styled(
                         label,
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(theme.secondary),
                     )),
                     hover_rect,
                 );
@@ -2250,13 +2289,15 @@ fn draw(frame: &mut Frame, app: &mut App) {
             app.shuffle,
             app.repeat_mode.label(),
             &crossfade_label,
+            theme,
         );
         if show_hint {
-            controls::draw_scope_hint(frame, chunks[5]);
+            controls::draw_scope_hint(frame, chunks[5], theme);
         }
     }
 
     // Overlays (rendered on top)
+    let theme = app.theme();
     if app.browser_open {
         file_browser::draw_file_browser(
             frame,
@@ -2267,13 +2308,17 @@ fn draw(frame: &mut Frame, app: &mut App) {
             &app.browser_filtered,
             app.browser_filter_idx,
             app.root_dir.as_deref(),
+            theme,
         );
     }
     if app.eq_open {
         let params = app.eq_params.lock().unwrap();
-        app.regions.eq_inner = eq::draw_eq(frame, &params, app.eq_selected_band, app.eq_hover_band);
+        app.regions.eq_inner = eq::draw_eq(frame, &params, app.eq_selected_band, app.eq_hover_band, theme);
+    }
+    if app.theme_open {
+        theme::draw_theme_selector(frame, app.theme_idx);
     }
     if app.info_open && app.track_loaded {
-        draw_track_info(frame, app);
+        draw_track_info(frame, app, theme);
     }
 }

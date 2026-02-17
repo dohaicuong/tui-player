@@ -6,72 +6,78 @@ use ratatui::{
     Frame,
 };
 
+use crate::theme::Theme;
+
 fn build_control_spans(
     show_visualizer: bool,
     has_browser: bool,
     shuffle: bool,
     repeat_label: &str,
     crossfade_label: &str,
+    theme: &Theme,
 ) -> Vec<Span<'static>> {
+    let key_style = Style::default().fg(Color::Black).bg(theme.secondary);
     let mut spans = vec![
-        Span::styled(" Space ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" Space ", key_style),
         Span::raw(" Play/Pause  "),
-        Span::styled(" ←/→ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" ←/→ ", key_style),
         Span::raw(" Seek ±5s  "),
-        Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" ↑/↓ ", key_style),
         Span::raw(" Volume  "),
     ];
     if show_visualizer {
         spans.extend([
-            Span::styled(" v ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" v ", key_style),
             Span::raw(" Vis Mode  "),
         ]);
     }
     spans.extend([
-        Span::styled(" l ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" l ", key_style),
         Span::raw(" Lyrics  "),
     ]);
     spans.extend([
-        Span::styled(" e ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" e ", key_style),
         Span::raw(" EQ  "),
     ]);
     if has_browser {
         spans.extend([
-            Span::styled(" n/N ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" n/N ", key_style),
             Span::raw(" Next/Prev  "),
-            Span::styled(" s ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" s ", key_style),
             Span::styled(
                 if shuffle { " Shuffle On  " } else { " Shuffle Off  " },
-                Style::default().fg(if shuffle { Color::Cyan } else { Color::Reset }),
+                Style::default().fg(if shuffle { theme.accent } else { Color::Reset }),
             ),
-            Span::styled(" r ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" r ", key_style),
             Span::styled(
                 format!(" {repeat_label}  "),
                 Style::default().fg(if repeat_label != "Repeat Off" {
-                    Color::Cyan
+                    theme.accent
                 } else {
                     Color::Reset
                 }),
             ),
-            Span::styled(" c ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" c ", key_style),
             Span::styled(
                 format!(" Crossfade {crossfade_label}  "),
                 Style::default().fg(if crossfade_label != "Off" {
-                    Color::Cyan
+                    theme.accent
                 } else {
                     Color::Reset
                 }),
             ),
-            Span::styled(" f ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" f ", key_style),
             Span::raw(" Files  "),
         ]);
     }
     spans.extend([
-        Span::styled(" i ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" t ", key_style),
+        Span::raw(" Theme  "),
+        Span::styled(" i ", key_style),
         Span::raw(" Track Info  "),
-        Span::styled(" x ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" x ", key_style),
         Span::raw(" Clear Cache  "),
-        Span::styled(" q ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(" q ", key_style),
         Span::raw(" Quit"),
     ]);
     spans
@@ -107,8 +113,9 @@ pub fn controls_height(
     shuffle: bool,
     repeat_label: &str,
     crossfade_label: &str,
+    theme: &Theme,
 ) -> u16 {
-    let spans = build_control_spans(show_visualizer, has_browser, shuffle, repeat_label, crossfade_label);
+    let spans = build_control_spans(show_visualizer, has_browser, shuffle, repeat_label, crossfade_label, theme);
     let inner_w = width.saturating_sub(2) as usize;
     let lines = wrap_lines(spans, inner_w);
     lines.len() as u16 + 2 // +2 for borders
@@ -122,8 +129,9 @@ pub fn draw_controls(
     shuffle: bool,
     repeat_label: &str,
     crossfade_label: &str,
+    theme: &Theme,
 ) {
-    let spans = build_control_spans(show_visualizer, has_browser, shuffle, repeat_label, crossfade_label);
+    let spans = build_control_spans(show_visualizer, has_browser, shuffle, repeat_label, crossfade_label, theme);
     let inner_w = area.width.saturating_sub(2) as usize;
     let lines = wrap_lines(spans, inner_w);
     let help = Paragraph::new(lines).block(
@@ -135,11 +143,11 @@ pub fn draw_controls(
     frame.render_widget(help, area);
 }
 
-pub fn draw_scope_hint(frame: &mut Frame, area: Rect) {
+pub fn draw_scope_hint(frame: &mut Frame, area: Rect, theme: &Theme) {
     let hint = Line::from(vec![
-        Span::styled(" Run ", Style::default().fg(Color::DarkGray)),
-        Span::styled("cargo install scope-tui", Style::default().fg(Color::Yellow)),
-        Span::styled(" to enable audio visualizer", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Run ", Style::default().fg(theme.dimmed)),
+        Span::styled("cargo install scope-tui", Style::default().fg(theme.secondary)),
+        Span::styled(" to enable audio visualizer", Style::default().fg(theme.dimmed)),
     ]);
     frame.render_widget(Paragraph::new(hint), area);
 }

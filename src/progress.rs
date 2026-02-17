@@ -2,13 +2,13 @@ use std::time::Duration;
 
 use ratatui::{
     layout::{Alignment, Rect},
-    style::Color,
     text::Line,
     widgets::{Block, BorderType, Borders},
     Frame,
 };
 
 use crate::gauge::RoundedGauge;
+use crate::theme::Theme;
 
 fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();
@@ -21,6 +21,7 @@ pub fn draw_progress(
     elapsed: Duration,
     total: Option<Duration>,
     waveform: Option<&[f32]>,
+    theme: &Theme,
 ) {
     let progress_label = match total {
         Some(t) if !t.is_zero() => {
@@ -44,7 +45,9 @@ pub fn draw_progress(
         .title(" Progress ")
         .title(Line::from(format!(" {progress_label} ")).alignment(Alignment::Right));
 
-    let mut gauge = RoundedGauge::new(ratio, String::new(), Color::Cyan).block(block);
+    let mut gauge = RoundedGauge::new(ratio, String::new(), theme.accent)
+        .dimmed_color(theme.dimmed)
+        .block(block);
     if let Some(wf) = waveform {
         gauge = gauge.waveform(wf);
     }

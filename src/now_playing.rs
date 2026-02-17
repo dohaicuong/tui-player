@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use crate::TrackMeta;
+use crate::theme::Theme;
 
 pub const ART_ROWS: u16 = 16;
 pub const ART_COLS: u16 = ART_ROWS * 2; // 2 cols per row for square aspect
@@ -205,6 +206,7 @@ pub fn draw_now_playing_bar(
     file_name: &str,
     meta: &TrackMeta,
     track_pos: Option<(usize, usize)>,
+    theme: &Theme,
 ) {
     let mut meta_parts: Vec<&str> = Vec::new();
     if let Some(ref artist) = meta.artist {
@@ -225,15 +227,15 @@ pub fn draw_now_playing_bar(
     let mut title_spans = vec![
         Span::styled(
             format!(" {status} "),
-            Style::default().fg(Color::Black).bg(Color::Cyan),
+            Style::default().fg(Color::Black).bg(theme.accent),
         ),
         Span::raw("  "),
-        Span::styled(file_name, Style::default().fg(Color::White)),
+        Span::styled(file_name, Style::default().fg(theme.text)),
     ];
     if let Some((cur, total)) = track_pos {
         title_spans.push(Span::styled(
             format!("  {cur}/{total}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.dimmed),
         ));
     }
     let mut lines = vec![Line::from(title_spans)];
@@ -242,7 +244,7 @@ pub fn draw_now_playing_bar(
             Span::raw("         "),
             Span::styled(
                 meta_parts.join("  ·  "),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.dimmed),
             ),
         ]));
     }

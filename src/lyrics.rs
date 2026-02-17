@@ -4,11 +4,13 @@ use crate::{cache_hash, config_dir};
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
     Frame,
 };
+
+use crate::theme::Theme;
 
 pub struct LyricsResult {
     pub text: String,
@@ -262,6 +264,7 @@ pub fn draw_lyrics(
     lyrics_url: &str,
     lyrics_loading: bool,
     lyrics_scroll: &mut usize,
+    theme: &Theme,
 ) {
     let lyrics_text = if lyrics_loading {
         format!("Loading...\n\n{}", lyrics_url)
@@ -273,7 +276,7 @@ pub fn draw_lyrics(
 
     let mut lyrics_lines: Vec<Line> = Vec::new();
     if !lyrics_url.is_empty() {
-        lyrics_lines.push(Line::from(Span::styled(lyrics_url, Style::default().fg(Color::DarkGray))));
+        lyrics_lines.push(Line::from(Span::styled(lyrics_url, Style::default().fg(theme.dimmed))));
         lyrics_lines.push(Line::raw(""));
     }
     lyrics_lines.extend(lyrics_text.lines().map(|l| Line::raw(l)));
@@ -284,7 +287,7 @@ pub fn draw_lyrics(
 
     let lyrics_widget = Paragraph::new(lyrics_lines)
         .scroll((*lyrics_scroll as u16, 0))
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(theme.text))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -295,7 +298,7 @@ pub fn draw_lyrics(
 }
 
 /// Draw the collapsed vertical lyrics tab.
-pub fn draw_lyrics_collapsed(frame: &mut Frame, area: Rect) {
+pub fn draw_lyrics_collapsed(frame: &mut Frame, area: Rect, theme: &Theme) {
     let inner_h = area.height.saturating_sub(2) as usize;
     let label = "Lyrics";
     let pad = inner_h.saturating_sub(label.len()) / 2;
@@ -306,7 +309,7 @@ pub fn draw_lyrics_collapsed(frame: &mut Frame, area: Rect) {
         } else {
             " "
         };
-        lines.push(Line::styled(ch, Style::default().fg(Color::DarkGray)));
+        lines.push(Line::styled(ch, Style::default().fg(theme.dimmed)));
     }
     let collapsed = Paragraph::new(lines).block(
         Block::default()

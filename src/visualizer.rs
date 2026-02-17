@@ -8,6 +8,7 @@ use ratatui::{
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use crate::SampleBuf;
+use crate::theme::Theme;
 
 // Visualization modes
 #[derive(Clone, Copy, PartialEq)]
@@ -48,14 +49,18 @@ struct OscilloscopeWidget<'a> {
     samples: &'a SampleBuf,
     channels: u16,
     block: Option<Block<'a>>,
+    wave_color: Color,
+    dim_color: Color,
 }
 
 impl<'a> OscilloscopeWidget<'a> {
-    fn new(samples: &'a SampleBuf, channels: u16) -> Self {
+    fn new(samples: &'a SampleBuf, channels: u16, wave_color: Color, dim_color: Color) -> Self {
         OscilloscopeWidget {
             samples,
             channels,
             block: None,
+            wave_color,
+            dim_color,
         }
     }
 
@@ -134,7 +139,7 @@ impl Widget for OscilloscopeWidget<'_> {
                 let x = inner.x + cx as u16;
                 let y = inner.y + cy as u16;
                 let has_wave = (dots & !ref_grid[cy * cols + cx]) != 0;
-                let color = if has_wave { Color::Green } else { Color::DarkGray };
+                let color = if has_wave { self.wave_color } else { self.dim_color };
                 buf[(x, y)].set_char(ch).set_fg(color);
             }
         }
@@ -145,14 +150,18 @@ struct VectorscopeWidget<'a> {
     samples: &'a SampleBuf,
     channels: u16,
     block: Option<Block<'a>>,
+    wave_color: Color,
+    dim_color: Color,
 }
 
 impl<'a> VectorscopeWidget<'a> {
-    fn new(samples: &'a SampleBuf, channels: u16) -> Self {
+    fn new(samples: &'a SampleBuf, channels: u16, wave_color: Color, dim_color: Color) -> Self {
         VectorscopeWidget {
             samples,
             channels,
             block: None,
+            wave_color,
+            dim_color,
         }
     }
 
@@ -265,9 +274,9 @@ impl Widget for VectorscopeWidget<'_> {
                 let has_wave = (dots & !ref_grid[cy * cols + cx]) != 0;
 
                 let color = if has_wave {
-                    Color::Green
+                    self.wave_color
                 } else {
-                    Color::DarkGray
+                    self.dim_color
                 };
 
                 buf[(x, y)].set_char(ch).set_fg(color);
@@ -280,14 +289,22 @@ struct SpectroscopeWidget<'a> {
     samples: &'a SampleBuf,
     channels: u16,
     block: Option<Block<'a>>,
+    color_top: Color,
+    color_mid: Color,
+    color_bot: Color,
+    dim_color: Color,
 }
 
 impl<'a> SpectroscopeWidget<'a> {
-    fn new(samples: &'a SampleBuf, channels: u16) -> Self {
+    fn new(samples: &'a SampleBuf, channels: u16, color_top: Color, color_mid: Color, color_bot: Color, dim_color: Color) -> Self {
         SpectroscopeWidget {
             samples,
             channels,
             block: None,
+            color_top,
+            color_mid,
+            color_bot,
+            dim_color,
         }
     }
 
@@ -414,14 +431,14 @@ impl Widget for SpectroscopeWidget<'_> {
                     // Color gradient based on vertical position
                     let frac = cy as f32 / rows as f32;
                     if frac < 0.33 {
-                        Color::Red
+                        self.color_top
                     } else if frac < 0.66 {
-                        Color::Yellow
+                        self.color_mid
                     } else {
-                        Color::Green
+                        self.color_bot
                     }
                 } else {
-                    Color::DarkGray
+                    self.dim_color
                 };
 
                 buf[(x, y)].set_char(ch).set_fg(color);
@@ -431,22 +448,22 @@ impl Widget for SpectroscopeWidget<'_> {
 }
 
 /// Render the active visualizer widget into the given area.
-pub fn draw_visualizer(frame: &mut Frame, area: Rect, mode: VisMode, samples: &SampleBuf, channels: u16) {
+pub fn draw_visualizer(frame: &mut Frame, area: Rect, mode: VisMode, samples: &SampleBuf, channels: u16, theme: &Theme) {
     let vis_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title(mode.label());
     match mode {
         VisMode::Oscilloscope => {
-            let w = OscilloscopeWidget::new(samples, channels).block(vis_block);
+            let w = OscilloscopeWidget::new(samples, channels, theme.positive, theme.dimmed).block(vis_block);
             frame.render_widget(w, area);
         }
         VisMode::Vectorscope => {
-            let w = VectorscopeWidget::new(samples, channels).block(vis_block);
+            let w = VectorscopeWidget::new(samples, channels, theme.positive, theme.dimmed).block(vis_block);
             frame.render_widget(w, area);
         }
         VisMode::Spectroscope => {
-            let w = SpectroscopeWidget::new(samples, channels).block(vis_block);
+            let w = SpectroscopeWidget::new(samples, channels, theme.negative, theme.secondary, theme.positive, theme.dimmed).block(vis_block);
             frame.render_widget(w, area);
         }
     }

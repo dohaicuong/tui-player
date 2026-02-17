@@ -3,11 +3,13 @@ use std::sync::{Arc, Mutex};
 use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type};
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
+
+use crate::theme::Theme;
 
 pub const NUM_BANDS: usize = 32;
 
@@ -247,7 +249,7 @@ fn format_freq(f: f32) -> String {
     }
 }
 
-pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover_band: Option<usize>) -> Rect {
+pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover_band: Option<usize>, theme: &Theme) -> Rect {
     let area = frame.area();
     // 32 bars × 2 chars = 64, + 1 leading + 4 dB label + 2 border = 71
     let popup_width = 74u16.min(area.width);
@@ -295,14 +297,14 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover
         Span::styled(
             preset_name,
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("    "),
         Span::styled(
             format!("▸ {sel_freq} Hz  {sel_gain_str} dB"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.secondary)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -335,22 +337,22 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover
 
             let (ch, style) = if filled {
                 let color = if is_selected {
-                    Color::Cyan
+                    theme.accent
                 } else if *gain >= 0.0 {
-                    Color::Green
+                    theme.positive
                 } else {
-                    Color::Red
+                    theme.negative
                 };
                 ("██", Style::default().fg(color))
             } else if is_zero_line {
                 let color = if is_selected {
-                    Color::Cyan
+                    theme.accent
                 } else {
-                    Color::DarkGray
+                    theme.dimmed
                 };
                 ("──", Style::default().fg(color))
             } else if is_selected {
-                ("▏▕", Style::default().fg(Color::DarkGray))
+                ("▏▕", Style::default().fg(theme.dimmed))
             } else {
                 ("  ", Style::default())
             };
@@ -362,14 +364,14 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover
         if row == 0 {
             spans.push(Span::styled(
                 format!(" +{:.0}", MAX_GAIN),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.dimmed),
             ));
         } else if row == zero_row {
-            spans.push(Span::styled("  0", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("  0", Style::default().fg(theme.dimmed)));
         } else if row == bar_height - 1 {
             spans.push(Span::styled(
                 format!(" -{:.0}", MAX_GAIN),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.dimmed),
             ));
         }
 
@@ -396,8 +398,8 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover
     let axis_str: String = axis.into_iter().collect();
     lines.push(Line::from(vec![
         Span::raw(" "),
-        Span::styled(axis_str, Style::default().fg(Color::Yellow)),
-        Span::styled(" Hz", Style::default().fg(Color::DarkGray)),
+        Span::styled(axis_str, Style::default().fg(theme.secondary)),
+        Span::styled(" Hz", Style::default().fg(theme.dimmed)),
     ]));
 
     let paragraph = Paragraph::new(lines);
@@ -424,7 +426,7 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     label,
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.secondary),
                 )),
                 hover_rect,
             );

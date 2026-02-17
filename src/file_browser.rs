@@ -9,6 +9,8 @@ use ratatui::{
 };
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
+use crate::theme::Theme;
+
 pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "wav", "aac", "m4a"];
 
 pub fn is_audio_file(path: &Path) -> bool {
@@ -127,6 +129,7 @@ pub fn draw_file_browser(
     filtered: &[PathBuf],
     filter_idx: usize,
     root_dir: Option<&Path>,
+    theme: &Theme,
 ) {
     let popup = popup_area(frame);
     frame.render_widget(Clear, popup);
@@ -145,7 +148,7 @@ pub fn draw_file_browser(
             .highlight_style(
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .bg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol(">> ");
@@ -170,14 +173,14 @@ pub fn draw_file_browser(
 
         let match_count = filtered.len();
         let bottom_title = Line::from(vec![
-            Span::styled(" / ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" / ", Style::default().fg(Color::Black).bg(theme.secondary)),
             Span::styled(
                 format!(" {search}█"),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme.text),
             ),
             Span::styled(
                 format!("  ({match_count} matches) "),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.dimmed),
             ),
         ]);
 
@@ -192,7 +195,7 @@ pub fn draw_file_browser(
             .highlight_style(
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .bg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol(">> ");

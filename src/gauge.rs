@@ -13,6 +13,7 @@ pub struct RoundedGauge<'a> {
     filled_color: Color,
     overflow_at: Option<f64>,
     overflow_color: Color,
+    dimmed_color: Color,
     block: Option<Block<'a>>,
     waveform: Option<&'a [f32]>,
 }
@@ -25,9 +26,15 @@ impl<'a> RoundedGauge<'a> {
             filled_color,
             overflow_at: None,
             overflow_color: Color::Red,
+            dimmed_color: Color::DarkGray,
             block: None,
             waveform: None,
         }
+    }
+
+    pub fn dimmed_color(mut self, color: Color) -> Self {
+        self.dimmed_color = color;
+        self
     }
 
     pub fn waveform(mut self, wf: &'a [f32]) -> Self {
@@ -91,7 +98,7 @@ impl Widget for RoundedGauge<'_> {
                 } else {
                     self.filled_color
                 };
-                let fg = if col < filled { fill_color } else { Color::DarkGray };
+                let fg = if col < filled { fill_color } else { self.dimmed_color };
                 buf[(x, y)].set_char(ch).set_fg(fg).set_bg(Color::Reset);
             }
         } else {
@@ -104,11 +111,11 @@ impl Widget for RoundedGauge<'_> {
                 };
                 let (ch, fg, bg) = if filled == 0 {
                     if col == 0 {
-                        ('╶', Color::DarkGray, Color::Reset)
+                        ('╶', self.dimmed_color, Color::Reset)
                     } else if col == width - 1 {
-                        ('╴', Color::DarkGray, Color::Reset)
+                        ('╴', self.dimmed_color, Color::Reset)
                     } else {
-                        ('─', Color::DarkGray, Color::Reset)
+                        ('─', self.dimmed_color, Color::Reset)
                     }
                 } else if col < filled {
                     if col == 0 {
@@ -120,9 +127,9 @@ impl Widget for RoundedGauge<'_> {
                     }
                 } else {
                     if col == width - 1 {
-                        ('╴', Color::DarkGray, Color::Reset)
+                        ('╴', self.dimmed_color, Color::Reset)
                     } else {
-                        ('─', Color::DarkGray, Color::Reset)
+                        ('─', self.dimmed_color, Color::Reset)
                     }
                 };
 
