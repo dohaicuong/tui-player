@@ -376,6 +376,7 @@ struct App {
     crossfade: Option<CrossfadeState>,
     theme_idx: usize,
     theme_open: bool,
+    mini_mode: bool,
 }
 
 impl App {
@@ -749,6 +750,7 @@ impl App {
             crossfade: None,
             theme_idx: theme::load_theme(),
             theme_open: false,
+            mini_mode: false,
         }
     }
 
@@ -821,6 +823,7 @@ impl App {
             crossfade: None,
             theme_idx: theme::load_theme(),
             theme_open: false,
+            mini_mode: false,
         }
     }
 
@@ -1752,6 +1755,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             KeyCode::Char('t') => {
                                 app.theme_open = true;
                             }
+                            KeyCode::Char('m') => {
+                                app.mini_mode = !app.mini_mode;
+                            }
                             KeyCode::Char('c') => {
                                 let idx = CROSSFADE_OPTIONS
                                     .iter()
@@ -2093,6 +2099,57 @@ fn draw(frame: &mut Frame, app: &mut App) {
         .alignment(Alignment::Center);
         let y = area.height / 2;
         frame.render_widget(msg, Rect::new(area.x, y, area.width, 1));
+    } else if app.mini_mode {
+        let track_pos = {
+            let files = file_browser::collect_audio_files(&app.browser_items);
+            files
+                .iter()
+                .position(|f| f == &app.file_path)
+                .map(|i| (i + 1, files.len()))
+        };
+
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
+        .split(frame.area());
+
+        app.regions.now_playing = chunks[0];
+        app.regions.progress = chunks[1];
+        app.regions.volume = chunks[2];
+
+        now_playing::draw_now_playing_mini(
+            frame,
+            chunks[0],
+            &app.file_name,
+            track_pos,
+            theme,
+        );
+
+        let waveform_normalized = {
+            let raw = app.waveform.lock().unwrap();
+            if raw.is_empty() {
+                None
+            } else {
+                let max = raw.iter().cloned().fold(0.0f32, f32::max);
+                if max > 0.0 {
+                    Some(raw.iter().map(|v| v / max).collect::<Vec<f32>>())
+                } else {
+                    None
+                }
+            }
+        };
+        progress::draw_progress(
+            frame,
+            chunks[1],
+            app.position(),
+            app.total_duration,
+            waveform_normalized.as_deref(),
+            theme,
+        );
+
+        volume::draw_volume(frame, chunks[2], app.volume, theme);
     } else {
         let track_pos = {
             let files = file_browser::collect_audio_files(&app.browser_items);

@@ -71,6 +71,8 @@ fn build_control_spans(
         ]);
     }
     spans.extend([
+        Span::styled(" m ", key_style),
+        Span::raw(" Mini  "),
         Span::styled(" t ", key_style),
         Span::raw(" Theme  "),
         Span::styled(" i ", key_style),

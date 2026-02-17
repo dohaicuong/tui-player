@@ -258,3 +258,24 @@ pub fn draw_now_playing_bar(
         );
     frame.render_widget(title, area);
 }
+
+/// Draw a single borderless line: song title on the left, track position on the right.
+pub fn draw_now_playing_mini(
+    frame: &mut Frame,
+    area: Rect,
+    file_name: &str,
+    track_pos: Option<(usize, usize)>,
+    theme: &Theme,
+) {
+    let mut spans = vec![
+        Span::styled(format!(" {file_name}"), Style::default().fg(theme.text)),
+    ];
+    if let Some((cur, total)) = track_pos {
+        spans.push(Span::styled(
+            format!("  {cur}/{total}"),
+            Style::default().fg(theme.dimmed),
+        ));
+    }
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
+}

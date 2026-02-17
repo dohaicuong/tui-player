@@ -9,6 +9,5 @@
 - [ ] Playback speed control (0.5x–2x)
 - [ ] Last.fm / ListenBrainz scrobbling
 - [ ] M3U playlist import/export
-- [ ] Color themes (customizable accent colors)
-- [ ] Mini mode (ultra-compact single-line display)
+- [x] Mini mode (ultra-compact single-line display)
 - [ ] Stereo balance (left/right pan control)

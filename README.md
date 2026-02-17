@@ -19,7 +19,9 @@ A terminal music player written in Rust.
 - Lyrics and album art caching (`~/.config/tui-player/cache/`) — instant load on repeat plays
 - Responsive layout (controls and metadata wrap to multiple lines on narrow terminals)
 - Media key support (play/pause, next/prev, volume, stop, mute — requires terminal with kitty keyboard protocol)
-- Persistent settings (volume, visualizer mode, lyrics visibility, EQ, crossfade)
+- Mini mode — compact 7-line view with just title, progress, and volume (press `m`)
+- 13 color themes with live preview selector (press `t`)
+- Persistent settings (volume, visualizer mode, lyrics visibility, EQ, crossfade, theme)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
 
 ## System Dependencies
@@ -68,6 +70,8 @@ tui-player <music-file-or-directory>
 | `s` | Toggle shuffle |
 | `r` | Cycle repeat (Off / All / One) |
 | `c` | Cycle crossfade (Off / 2s / 5s / 8s) |
+| `m` | Toggle mini mode |
+| `t` | Open theme selector |
 | `i` | Show track info popup |
 | `x` | Clear lyrics/art cache and re-fetch |
 | `j` / `k` | Scroll lyrics |
@@ -97,3 +101,4 @@ Settings are persisted in `~/.config/tui-player/`:
 - `repeat_mode` — repeat mode (off, all, one)
 - `shuffle` — shuffle on/off
 - `crossfade` — crossfade duration in seconds (0 = off)
+- `theme` — selected color theme index
