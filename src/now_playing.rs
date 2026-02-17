@@ -97,6 +97,7 @@ pub fn draw_now_playing(
     file_name: &str,
     meta: &TrackMeta,
     album_art: Option<&ArtPixels>,
+    track_pos: Option<(usize, usize)>,
 ) -> NowPlayingLayout {
     let mut meta_parts: Vec<&str> = Vec::new();
     if let Some(ref artist) = meta.artist {
@@ -130,10 +131,17 @@ pub fn draw_now_playing(
 
         // Status + title at the top
         let status = if paused { "Paused" } else { "Playing" };
-        let status_line = Line::from(vec![Span::styled(
+        let mut status_spans = vec![Span::styled(
             format!(" {status} "),
             Style::default().fg(Color::Black).bg(Color::Cyan),
-        )]);
+        )];
+        if let Some((cur, total)) = track_pos {
+            status_spans.push(Span::styled(
+                format!("  {cur}/{total}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        let status_line = Line::from(status_spans);
         let title_line =
             Line::from(Span::styled(file_name, Style::default().fg(Color::White)));
 
@@ -214,6 +222,7 @@ pub fn draw_now_playing_bar(
     paused: bool,
     file_name: &str,
     meta: &TrackMeta,
+    track_pos: Option<(usize, usize)>,
 ) {
     let mut meta_parts: Vec<&str> = Vec::new();
     if let Some(ref artist) = meta.artist {
@@ -231,14 +240,21 @@ pub fn draw_now_playing_bar(
     let has_meta = !meta_parts.is_empty();
 
     let status = if paused { "Paused" } else { "Playing" };
-    let mut lines = vec![Line::from(vec![
+    let mut title_spans = vec![
         Span::styled(
             format!(" {status} "),
             Style::default().fg(Color::Black).bg(Color::Cyan),
         ),
         Span::raw("  "),
         Span::styled(file_name, Style::default().fg(Color::White)),
-    ])];
+    ];
+    if let Some((cur, total)) = track_pos {
+        title_spans.push(Span::styled(
+            format!("  {cur}/{total}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let mut lines = vec![Line::from(title_spans)];
     if has_meta {
         lines.push(Line::from(vec![
             Span::raw("         "),

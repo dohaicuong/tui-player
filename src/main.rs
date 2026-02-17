@@ -1009,12 +1009,20 @@ fn draw(frame: &mut Frame, app: &mut App) {
         let y = area.height / 2;
         frame.render_widget(msg, Rect::new(area.x, y, area.width, 1));
     } else {
+        let track_pos = {
+            let files = file_browser::collect_audio_files(&app.browser_items);
+            files
+                .iter()
+                .position(|f| f == &app.file_path)
+                .map(|i| (i + 1, files.len()))
+        };
         let np = now_playing::draw_now_playing(
             frame,
             app.paused,
             &app.file_name,
             &app.meta,
             app.album_art.as_ref(),
+            track_pos,
         );
         app.regions.now_playing = np.region;
 
@@ -1047,6 +1055,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 app.paused,
                 &app.file_name,
                 &app.meta,
+                track_pos,
             );
         }
 
