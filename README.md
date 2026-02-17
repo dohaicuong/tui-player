@@ -102,3 +102,4 @@ Settings are persisted in `~/.config/tui-player/`:
 - `shuffle` — shuffle on/off
 - `crossfade` — crossfade duration in seconds (0 = off)
 - `theme` — selected color theme index
+- `mini_mode` — mini mode on/off

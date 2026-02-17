@@ -504,6 +504,19 @@ fn save_crossfade(duration: f32) {
     let _ = fs::write(dir.join("crossfade"), format!("{duration}"));
 }
 
+fn load_mini_mode() -> bool {
+    fs::read_to_string(config_dir().join("mini_mode"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(false)
+}
+
+fn save_mini_mode(enabled: bool) {
+    let dir = config_dir();
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("mini_mode"), format!("{enabled}"));
+}
+
 fn create_pipe() {
     let _ = fs::remove_file(PIPE_PATH);
     unsafe {
@@ -750,7 +763,7 @@ impl App {
             crossfade: None,
             theme_idx: theme::load_theme(),
             theme_open: false,
-            mini_mode: false,
+            mini_mode: load_mini_mode(),
         }
     }
 
@@ -823,7 +836,7 @@ impl App {
             crossfade: None,
             theme_idx: theme::load_theme(),
             theme_open: false,
-            mini_mode: false,
+            mini_mode: load_mini_mode(),
         }
     }
 
@@ -1757,6 +1770,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             }
                             KeyCode::Char('m') => {
                                 app.mini_mode = !app.mini_mode;
+                                save_mini_mode(app.mini_mode);
                             }
                             KeyCode::Char('c') => {
                                 let idx = CROSSFADE_OPTIONS
