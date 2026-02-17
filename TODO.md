@@ -7,7 +7,7 @@
 - [x] EQ band hover tooltip, click-to-select, scroll-to-adjust
 - [ ] Playlist queue (manually reorder tracks)
 - [ ] Album art in compact bar (small inline art)
-- [ ] Waveform preview (pre-scan track for seek bar visualization)
+- [x] Waveform preview (pre-scan track for seek bar visualization)
 - [ ] Crossfade between tracks
 - [ ] Sleep timer
 - [ ] Global hotkeys (control from outside the terminal)

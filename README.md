@@ -15,6 +15,7 @@ A terminal music player written in Rust.
 - ReplayGain volume normalization (reads track/album gain tags)
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic equalizer with presets (press `e`) — real-time biquad filtering
+- Waveform preview on seek bar (progressive background scan, block character rendering)
 - Persistent settings (volume, visualizer mode, lyrics visibility, EQ)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
 

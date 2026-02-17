@@ -246,6 +246,67 @@ struct QueuedTrack {
     finished: Arc<AtomicBool>,
 }
 
+const WAVEFORM_BINS: usize = 1024;
+type SharedWaveform = Arc<Mutex<Vec<f32>>>;
+
+fn spawn_waveform_scan(path: PathBuf, total_duration: Duration, waveform: SharedWaveform) {
+    std::thread::spawn(move || {
+        scan_waveform_progressive(&path, total_duration, &waveform);
+    });
+}
+
+fn scan_waveform_progressive(path: &PathBuf, total_duration: Duration, waveform: &Mutex<Vec<f32>>) {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let buf = io::BufReader::new(file);
+    let source = match Decoder::new(buf) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let channels = source.channels() as usize;
+    let sample_rate = source.sample_rate() as usize;
+    let total_frames = (total_duration.as_secs_f64() * sample_rate as f64) as usize;
+    let frames_per_bin = (total_frames / WAVEFORM_BINS).max(1);
+
+    let mut batch = Vec::with_capacity(32);
+    let mut current_peak: f32 = 0.0;
+    let mut frame_count = 0;
+    let mut ch_count = 0;
+    let mut frame_peak: f32 = 0.0;
+
+    for sample in source {
+        frame_peak = frame_peak.max(sample.abs());
+        ch_count += 1;
+        if ch_count >= channels {
+            current_peak = current_peak.max(frame_peak);
+            frame_peak = 0.0;
+            ch_count = 0;
+            frame_count += 1;
+            if frame_count >= frames_per_bin {
+                batch.push(current_peak);
+                current_peak = 0.0;
+                frame_count = 0;
+                if batch.len() >= 32 {
+                    if let Ok(mut wf) = waveform.lock() {
+                        wf.extend_from_slice(&batch);
+                    }
+                    batch.clear();
+                }
+            }
+        }
+    }
+    if frame_count > 0 {
+        batch.push(current_peak);
+    }
+    if !batch.is_empty() {
+        if let Ok(mut wf) = waveform.lock() {
+            wf.extend_from_slice(&batch);
+        }
+    }
+}
+
 struct App {
     file_path: PathBuf,
     file_name: String,
@@ -291,6 +352,7 @@ struct App {
     progress_hover_col: Option<u16>,
     volume_hover_col: Option<u16>,
     eq_hover_band: Option<usize>,
+    waveform: SharedWaveform,
 }
 
 impl App {
@@ -621,6 +683,13 @@ impl App {
             progress_hover_col: None,
             volume_hover_col: None,
             eq_hover_band: None,
+            waveform: {
+                let wf: SharedWaveform = Arc::new(Mutex::new(Vec::new()));
+                if let Some(d) = total_duration {
+                    spawn_waveform_scan(path.clone(), d, Arc::clone(&wf));
+                }
+                wf
+            },
         }
     }
 
@@ -686,6 +755,7 @@ impl App {
             progress_hover_col: None,
             volume_hover_col: None,
             eq_hover_band: None,
+            waveform: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -731,7 +801,7 @@ impl App {
             sbuf.clear();
         }
 
-        // Reset lyrics and art
+        // Reset lyrics, art, and waveform
         self.lyrics = None;
         self.lyrics_scroll = 0;
         self.lyrics_loading = false;
@@ -739,6 +809,10 @@ impl App {
         self.lyrics_rx = None;
         self.album_art = None;
         self.art_rx = None;
+        self.waveform = Arc::new(Mutex::new(Vec::new()));
+        if let Some(d) = self.total_duration {
+            spawn_waveform_scan(path.clone(), d, Arc::clone(&self.waveform));
+        }
 
         // Spawn new lyrics fetchers
         let lyrics_artist = probe.meta.artist.clone().unwrap_or_default();
@@ -983,7 +1057,7 @@ impl App {
         self.normalize_gain = queued.normalize_gain;
         self.current_finished = queued.finished;
 
-        // Reset lyrics and art
+        // Reset lyrics, art, and waveform
         self.lyrics = None;
         self.lyrics_scroll = 0;
         self.lyrics_loading = false;
@@ -991,6 +1065,10 @@ impl App {
         self.lyrics_rx = None;
         self.album_art = None;
         self.art_rx = None;
+        self.waveform = Arc::new(Mutex::new(Vec::new()));
+        if let Some(d) = self.total_duration {
+            spawn_waveform_scan(self.file_path.clone(), d, Arc::clone(&self.waveform));
+        }
 
         // Spawn new lyrics fetchers
         let lyrics_artist = queued.meta.artist.clone().unwrap_or_default();
@@ -1110,6 +1188,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                     app.art_rx = None;
                 }
             }
+
         }
 
         terminal.draw(|f| draw(f, &mut *app))?;
@@ -1622,7 +1701,26 @@ fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
 
-        progress::draw_progress(frame, chunks[2], app.position(), app.total_duration);
+        let waveform_normalized = {
+            let raw = app.waveform.lock().unwrap();
+            if raw.is_empty() {
+                None
+            } else {
+                let max = raw.iter().cloned().fold(0.0f32, f32::max);
+                if max > 0.0 {
+                    Some(raw.iter().map(|v| v / max).collect::<Vec<f32>>())
+                } else {
+                    None
+                }
+            }
+        };
+        progress::draw_progress(
+            frame,
+            chunks[2],
+            app.position(),
+            app.total_duration,
+            waveform_normalized.as_deref(),
+        );
 
         // Hover time tooltip on progress bar top border
         if let (Some(hover_col), Some(total)) = (app.progress_hover_col, app.total_duration) {
