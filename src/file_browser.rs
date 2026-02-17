@@ -50,6 +50,22 @@ pub fn scan_directory(root: &Path) -> Vec<TreeItem<'static, PathBuf>> {
     items
 }
 
+/// Collect all audio file paths from the tree in display order (depth-first).
+pub fn collect_audio_files(items: &[TreeItem<'static, PathBuf>]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    fn walk(items: &[TreeItem<'_, PathBuf>], out: &mut Vec<PathBuf>) {
+        for item in items {
+            let path = item.identifier();
+            if path.is_file() && is_audio_file(path) {
+                out.push(path.clone());
+            }
+            walk(item.children(), out);
+        }
+    }
+    walk(items, &mut files);
+    files
+}
+
 pub fn selected_file(state: &TreeState<PathBuf>) -> Option<PathBuf> {
     let selected = state.selected();
     let path = selected.last()?;

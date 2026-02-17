@@ -951,7 +951,15 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         }
 
         if app.track_loaded && app.is_finished() && !app.paused {
-            if app.root_dir.is_some() {
+            // Try to advance to the next track in the directory
+            let next = {
+                let files = file_browser::collect_audio_files(&app.browser_items);
+                let current_idx = files.iter().position(|f| f == &app.file_path);
+                current_idx.and_then(|i| files.get(i + 1).cloned())
+            };
+            if let Some(next_path) = next {
+                app.switch_track(&next_path);
+            } else if app.root_dir.is_some() {
                 app.browser_open = true;
                 app.track_loaded = false;
             } else {
