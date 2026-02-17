@@ -195,6 +195,46 @@ struct LayoutRegions {
     lyrics_title: Rect,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum RepeatMode {
+    Off,
+    All,
+    One,
+}
+
+impl RepeatMode {
+    fn next(self) -> Self {
+        match self {
+            RepeatMode::Off => RepeatMode::All,
+            RepeatMode::All => RepeatMode::One,
+            RepeatMode::One => RepeatMode::Off,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            RepeatMode::Off => "Repeat Off",
+            RepeatMode::All => "Repeat All",
+            RepeatMode::One => "Repeat One",
+        }
+    }
+}
+
+fn shuffle_indices(len: usize) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..len).collect();
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let mut rng = seed;
+    for i in (1..len).rev() {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let j = (rng >> 33) as usize % (i + 1);
+        indices.swap(i, j);
+    }
+    indices
+}
+
 struct QueuedTrack {
     path: PathBuf,
     file_name: String,
@@ -244,6 +284,9 @@ struct App {
     eq_open: bool,
     eq_params: eq::SharedEqParams,
     eq_selected_band: usize,
+    repeat_mode: RepeatMode,
+    shuffle: bool,
+    shuffle_order: Vec<usize>,
 }
 
 impl App {
@@ -304,6 +347,41 @@ fn save_lyrics_visible(visible: bool) {
     let dir = config_dir();
     let _ = fs::create_dir_all(&dir);
     let _ = fs::write(dir.join("lyrics_visible"), if visible { "true" } else { "false" });
+}
+
+fn load_repeat_mode() -> RepeatMode {
+    fs::read_to_string(config_dir().join("repeat_mode"))
+        .ok()
+        .and_then(|s| match s.trim() {
+            "all" => Some(RepeatMode::All),
+            "one" => Some(RepeatMode::One),
+            _ => None,
+        })
+        .unwrap_or(RepeatMode::Off)
+}
+
+fn save_repeat_mode(mode: RepeatMode) {
+    let dir = config_dir();
+    let _ = fs::create_dir_all(&dir);
+    let name = match mode {
+        RepeatMode::Off => "off",
+        RepeatMode::All => "all",
+        RepeatMode::One => "one",
+    };
+    let _ = fs::write(dir.join("repeat_mode"), name);
+}
+
+fn load_shuffle() -> bool {
+    fs::read_to_string(config_dir().join("shuffle"))
+        .ok()
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
+}
+
+fn save_shuffle(shuffle: bool) {
+    let dir = config_dir();
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("shuffle"), if shuffle { "true" } else { "false" });
 }
 
 fn create_pipe() {
@@ -533,6 +611,9 @@ impl App {
             eq_open: false,
             eq_params,
             eq_selected_band: 0,
+            repeat_mode: load_repeat_mode(),
+            shuffle: load_shuffle(),
+            shuffle_order: Vec::new(),
         }
     }
 
@@ -592,6 +673,9 @@ impl App {
             eq_open: false,
             eq_params,
             eq_selected_band: 0,
+            repeat_mode: load_repeat_mode(),
+            shuffle: load_shuffle(),
+            shuffle_order: Vec::new(),
         }
     }
 
@@ -743,19 +827,81 @@ impl App {
         save_volume(self.volume);
     }
 
-    fn next_track(&mut self) {
+    fn find_next_path(&self) -> Option<PathBuf> {
         let files = file_browser::collect_audio_files(&self.browser_items);
-        let idx = files.iter().position(|f| f == &self.file_path);
-        if let Some(next) = idx.and_then(|i| files.get(i + 1)).cloned() {
+        if files.is_empty() {
+            return None;
+        }
+        if self.repeat_mode == RepeatMode::One {
+            return Some(self.file_path.clone());
+        }
+        if self.shuffle && !self.shuffle_order.is_empty() {
+            let pos = self
+                .shuffle_order
+                .iter()
+                .position(|&i| files.get(i) == Some(&self.file_path));
+            match pos {
+                Some(p) if p + 1 < self.shuffle_order.len() => {
+                    files.get(self.shuffle_order[p + 1]).cloned()
+                }
+                Some(_) if self.repeat_mode == RepeatMode::All => {
+                    files.get(self.shuffle_order[0]).cloned()
+                }
+                _ => None,
+            }
+        } else {
+            let idx = files.iter().position(|f| f == &self.file_path);
+            match idx {
+                Some(i) if i + 1 < files.len() => files.get(i + 1).cloned(),
+                Some(_) if self.repeat_mode == RepeatMode::All => files.first().cloned(),
+                _ => None,
+            }
+        }
+    }
+
+    fn find_prev_path(&self) -> Option<PathBuf> {
+        let files = file_browser::collect_audio_files(&self.browser_items);
+        if files.is_empty() {
+            return None;
+        }
+        if self.repeat_mode == RepeatMode::One {
+            return Some(self.file_path.clone());
+        }
+        if self.shuffle && !self.shuffle_order.is_empty() {
+            let pos = self
+                .shuffle_order
+                .iter()
+                .position(|&i| files.get(i) == Some(&self.file_path));
+            match pos {
+                Some(p) if p > 0 => files.get(self.shuffle_order[p - 1]).cloned(),
+                Some(_) if self.repeat_mode == RepeatMode::All => {
+                    files.get(*self.shuffle_order.last().unwrap()).cloned()
+                }
+                _ => None,
+            }
+        } else {
+            let idx = files.iter().position(|f| f == &self.file_path);
+            match idx {
+                Some(i) if i > 0 => files.get(i - 1).cloned(),
+                Some(_) if self.repeat_mode == RepeatMode::All => files.last().cloned(),
+                _ => None,
+            }
+        }
+    }
+
+    fn regenerate_shuffle(&mut self) {
+        let files = file_browser::collect_audio_files(&self.browser_items);
+        self.shuffle_order = shuffle_indices(files.len());
+    }
+
+    fn next_track(&mut self) {
+        if let Some(next) = self.find_next_path() {
             self.switch_track(&next);
         }
     }
 
     fn prev_track(&mut self) {
-        let files = file_browser::collect_audio_files(&self.browser_items);
-        let idx = files.iter().position(|f| f == &self.file_path);
-        if let Some(prev) = idx.and_then(|i| i.checked_sub(1)).and_then(|i| files.get(i)).cloned()
-        {
+        if let Some(prev) = self.find_prev_path() {
             self.switch_track(&prev);
         }
     }
@@ -764,12 +910,8 @@ impl App {
         if self.queued_track.is_some() {
             return;
         }
-        let files = file_browser::collect_audio_files(&self.browser_items);
-        let next_path = match files.iter().position(|f| f == &self.file_path) {
-            Some(i) => match files.get(i + 1) {
-                Some(p) => p.clone(),
-                None => return,
-            },
+        let next_path = match self.find_next_path() {
+            Some(p) => p,
             None => return,
         };
 
@@ -905,6 +1047,9 @@ fn main() -> io::Result<()> {
         App::new_with_track(&path, root_dir)
     };
     app.show_visualizer = scope_tui_installed;
+    if app.shuffle {
+        app.regenerate_shuffle();
+    }
     app.queue_next_track();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
@@ -1166,6 +1311,34 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                     app.prev_track();
                                 }
                             }
+                            KeyCode::Char('r') => {
+                                app.repeat_mode = app.repeat_mode.next();
+                                save_repeat_mode(app.repeat_mode);
+                                // Re-queue next track based on new mode
+                                if app.track_loaded {
+                                    app.queued_track = None;
+                                    app.sink.stop();
+                                    // Re-create sink for current track at current position
+                                    let pos = app.position();
+                                    app.seek_to(pos);
+                                }
+                            }
+                            KeyCode::Char('s') => {
+                                app.shuffle = !app.shuffle;
+                                save_shuffle(app.shuffle);
+                                if app.shuffle {
+                                    app.regenerate_shuffle();
+                                } else {
+                                    app.shuffle_order.clear();
+                                }
+                                // Re-queue next track based on new mode
+                                if app.track_loaded {
+                                    app.queued_track = None;
+                                    app.sink.stop();
+                                    let pos = app.position();
+                                    app.seek_to(pos);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1365,7 +1538,14 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
         progress::draw_progress(frame, chunks[2], app.position(), app.total_duration);
         volume::draw_volume(frame, chunks[3], app.volume);
-        controls::draw_controls(frame, chunks[4], app.show_visualizer, app.root_dir.is_some());
+        controls::draw_controls(
+            frame,
+            chunks[4],
+            app.show_visualizer,
+            app.root_dir.is_some(),
+            app.shuffle,
+            app.repeat_mode.label(),
+        );
         if show_hint {
             controls::draw_scope_hint(frame, chunks[5]);
         }

@@ -1,6 +1,6 @@
 # TODO
 
-- [ ] Shuffle / repeat modes (shuffle queue, repeat-one, repeat-all)
+- [x] Shuffle / repeat modes (shuffle queue, repeat-one, repeat-all)
 - [x] Previous/next track keys (skip forward/back without opening browser)
 - [x] Track position indicator (show "3/15" in now playing bar)
 - [ ] Clickable controls bar

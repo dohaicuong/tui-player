@@ -6,7 +6,14 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw_controls(frame: &mut Frame, area: Rect, show_visualizer: bool, has_browser: bool) {
+pub fn draw_controls(
+    frame: &mut Frame,
+    area: Rect,
+    show_visualizer: bool,
+    has_browser: bool,
+    shuffle: bool,
+    repeat_label: &str,
+) {
     let mut help_spans = vec![
         Span::styled(" Space ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Play/Pause  "),
@@ -33,6 +40,20 @@ pub fn draw_controls(frame: &mut Frame, area: Rect, show_visualizer: bool, has_b
         help_spans.extend([
             Span::styled(" n/N ", Style::default().fg(Color::Black).bg(Color::Yellow)),
             Span::raw(" Next/Prev  "),
+            Span::styled(" s ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                if shuffle { " Shuffle On  " } else { " Shuffle Off  " },
+                Style::default().fg(if shuffle { Color::Cyan } else { Color::Reset }),
+            ),
+            Span::styled(" r ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                format!(" {repeat_label}  "),
+                Style::default().fg(if repeat_label != "Repeat Off" {
+                    Color::Cyan
+                } else {
+                    Color::Reset
+                }),
+            ),
             Span::styled(" f ", Style::default().fg(Color::Black).bg(Color::Yellow)),
             Span::raw(" Files  "),
         ]);

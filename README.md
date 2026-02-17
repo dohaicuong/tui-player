@@ -10,6 +10,7 @@ A terminal music player written in Rust.
 - Album art display (half-block rendering)
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll)
 - File browser with tree navigation (press `f`) — accepts directories as input, fuzzy search with `/`
+- Shuffle and repeat modes (Off / All / One)
 - Gapless playback with pre-buffered next track
 - ReplayGain volume normalization (reads track/album gain tags)
 - Track position indicator (e.g. "3/15") in now playing panel
@@ -60,6 +61,8 @@ tui-player <music-file-or-directory>
 | `e` | Open equalizer |
 | `n` | Next track |
 | `N` | Previous track |
+| `s` | Toggle shuffle |
+| `r` | Cycle repeat (Off / All / One) |
 | `j` / `k` | Scroll lyrics |
 | `q` / `Ctrl+C` | Quit |
 
@@ -82,3 +85,5 @@ Settings are persisted in `~/.config/tui-player/`:
 - `vis_mode` — visualizer mode (oscilloscope, vectorscope, spectroscope)
 - `lyrics_visible` — lyrics panel visibility (true/false)
 - `eq` — equalizer state (enabled, preset, per-band gains)
+- `repeat_mode` — repeat mode (off, all, one)
+- `shuffle` — shuffle on/off

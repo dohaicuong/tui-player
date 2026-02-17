@@ -46,8 +46,9 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - ReplayGain normalization: reads track/album gain tags, applies per-sample linear gain in PipedSource
 - Track position indicator (e.g. "3/15") in now playing panel
 - 32-band graphic EQ overlay (e key) — biquad PeakingEQ filters, 11 presets, ±12 dB per band, real-time DSP
-- Keyboard: Space=play/pause, arrows=seek/volume, n/N=next/prev track, v=vis mode, l=lyrics, e=EQ, f=file browser, j/k=scroll, q/Ctrl+C=quit
-- Persistent config at `~/.config/tui-player/` (volume, vis_mode, lyrics_visible, eq)
+- Shuffle and repeat modes (Off/All/One) — s=shuffle, r=repeat cycle
+- Keyboard: Space=play/pause, arrows=seek/volume, n/N=next/prev track, s=shuffle, r=repeat, v=vis mode, l=lyrics, e=EQ, f=file browser, j/k=scroll, q/Ctrl+C=quit
+- Persistent config at `~/.config/tui-player/` (volume, vis_mode, lyrics_visible, eq, repeat_mode, shuffle)
 - Optional scope-tui integration via named pipe `/tmp/tui-player.pipe`
 - Adaptive layout (compact vs vertical left panel when album art loads)
 
@@ -63,3 +64,5 @@ All other crate dependencies (symphonia, rustfft, image, ureq, ratatui, crosster
 - `~/.config/tui-player/vis_mode`
 - `~/.config/tui-player/lyrics_visible`
 - `~/.config/tui-player/eq`
+- `~/.config/tui-player/repeat_mode`
+- `~/.config/tui-player/shuffle`
