@@ -28,7 +28,7 @@ use ratatui::{
 use tui_tree_widget::{TreeItem, TreeState};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 mod now_playing;
-use now_playing::{spawn_art_fetch, ArtPixels, ART_COLS, ART_ROWS};
+use now_playing::{draw_art_overlay, spawn_art_fetch, ArtPixels, ART_COLS, ART_ROWS};
 
 mod visualizer;
 use visualizer::VisMode;
@@ -1822,21 +1822,13 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 .position(|f| f == &app.file_path)
                 .map(|i| (i + 1, files.len()))
         };
-        let np = now_playing::draw_now_playing(
-            frame,
-            app.paused,
-            &app.file_name,
-            &app.meta,
-            app.album_art.as_ref(),
-            track_pos,
-        );
-        app.regions.now_playing = np.region;
+        let np_height = now_playing::now_playing_height(&app.meta);
 
         let show_middle = app.show_visualizer || app.lyrics_visible;
         let show_hint = !app.show_visualizer;
 
         let chunks = Layout::vertical([
-            Constraint::Length(np.row_height),
+            Constraint::Length(np_height),
             if show_middle {
                 Constraint::Min(8)
             } else {
@@ -1847,23 +1839,21 @@ fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(3),
             Constraint::Length(if show_hint { 1 } else { 0 }),
         ])
-        .split(np.main_area);
+        .split(frame.area());
 
         app.regions.visualizer = chunks[1];
         app.regions.progress = chunks[2];
         app.regions.volume = chunks[3];
 
-        if np.row_height > 0 {
-            app.regions.now_playing = chunks[0];
-            now_playing::draw_now_playing_bar(
-                frame,
-                chunks[0],
-                app.paused,
-                &app.file_name,
-                &app.meta,
-                track_pos,
-            );
-        }
+        app.regions.now_playing = chunks[0];
+        now_playing::draw_now_playing_bar(
+            frame,
+            chunks[0],
+            app.paused,
+            &app.file_name,
+            &app.meta,
+            track_pos,
+        );
 
         if show_middle {
             let collapsed_w: u16 = 3;
@@ -1896,6 +1886,9 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
             if let Some(va) = vis_area {
                 visualizer::draw_visualizer(frame, va, app.vis_mode, &app.samples, app.channels);
+                if let Some(ref pixels) = app.album_art {
+                    draw_art_overlay(frame, va, pixels, 0.75);
+                }
             }
 
             if app.lyrics_visible {

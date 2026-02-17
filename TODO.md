@@ -6,7 +6,7 @@
 - [x] Volume bar with value on hover
 - [x] EQ band hover tooltip, click-to-select, scroll-to-adjust
 - [ ] Playlist queue (manually reorder tracks)
-- [ ] Album art in compact bar (small inline art)
+- [x] Album art overlay on visualizer (semi-transparent, 32×32 half-block)
 - [x] Waveform preview (pre-scan track for seek bar visualization)
 - [x] Crossfade between tracks
 - [ ] Sleep timer

@@ -2,7 +2,7 @@ use std::{sync::mpsc, thread};
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
@@ -46,13 +46,34 @@ pub fn spawn_art_fetch(url: String, cols: u16, rows: u16) -> mpsc::Receiver<ArtP
     rx
 }
 
+fn color_to_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Black => (0, 0, 0),
+        Color::Red => (205, 0, 0),
+        Color::Green => (0, 205, 0),
+        Color::Yellow => (205, 205, 0),
+        Color::Blue => (0, 0, 238),
+        Color::Magenta => (205, 0, 205),
+        Color::Cyan => (0, 205, 205),
+        Color::White => (229, 229, 229),
+        Color::DarkGray => (127, 127, 127),
+        _ => (0, 0, 0),
+    }
+}
+
+fn blend(art: u8, bg: u8, opacity: f32) -> u8 {
+    (art as f32 * opacity + bg as f32 * (1.0 - opacity)) as u8
+}
+
 struct AlbumArtWidget<'a> {
     pixels: &'a [Vec<(u8, u8, u8)>],
+    opacity: f32,
 }
 
 impl<'a> AlbumArtWidget<'a> {
-    fn new(pixels: &'a [Vec<(u8, u8, u8)>]) -> Self {
-        AlbumArtWidget { pixels }
+    fn new(pixels: &'a [Vec<(u8, u8, u8)>], opacity: f32) -> Self {
+        AlbumArtWidget { pixels, opacity }
     }
 }
 
@@ -71,148 +92,50 @@ impl Widget for AlbumArtWidget<'_> {
                 let bot = self.pixels.get(bot_y).map(|r| r[cx]).unwrap_or(top);
                 let x = area.x + cx as u16;
                 let y = area.y + cy as u16;
+                let existing = &buf[(x, y)];
+                let ex_fg = color_to_rgb(existing.fg);
+                let ex_bg = color_to_rgb(existing.bg);
+                let o = self.opacity;
                 buf[(x, y)]
                     .set_char('▀')
-                    .set_fg(Color::Rgb(top.0, top.1, top.2))
-                    .set_bg(Color::Rgb(bot.0, bot.1, bot.2));
+                    .set_fg(Color::Rgb(
+                        blend(top.0, ex_fg.0, o),
+                        blend(top.1, ex_fg.1, o),
+                        blend(top.2, ex_fg.2, o),
+                    ))
+                    .set_bg(Color::Rgb(
+                        blend(bot.0, ex_bg.0, o),
+                        blend(bot.1, ex_bg.1, o),
+                        blend(bot.2, ex_bg.2, o),
+                    ));
             }
         }
     }
 }
 
-/// Result of drawing the Now Playing panel.
-pub struct NowPlayingLayout {
-    /// Hit region for mouse clicks on the Now Playing area.
-    pub region: Rect,
-    /// Remaining area for the rest of the UI (right side or full area).
-    pub main_area: Rect,
-    /// Height of the now-playing row in the vertical layout (0 when art panel is shown).
-    pub row_height: u16,
+/// Return the height needed for the compact Now Playing bar.
+pub fn now_playing_height(meta: &TrackMeta) -> u16 {
+    let has_meta = meta.artist.is_some()
+        || meta.album.is_some()
+        || meta.date.is_some()
+        || meta.genre.is_some();
+    if has_meta { 4 } else { 3 }
 }
 
-/// Draw the Now Playing panel and return layout info for the rest of the UI.
-pub fn draw_now_playing(
-    frame: &mut Frame,
-    paused: bool,
-    file_name: &str,
-    meta: &TrackMeta,
-    album_art: Option<&ArtPixels>,
-    track_pos: Option<(usize, usize)>,
-) -> NowPlayingLayout {
-    let mut meta_parts: Vec<&str> = Vec::new();
-    if let Some(ref artist) = meta.artist {
-        meta_parts.push(artist);
+/// Render album art as a small overlay on the top-left corner of a given area,
+/// inset by 1 cell to sit inside the visualizer border.
+pub fn draw_art_overlay(frame: &mut Frame, area: Rect, pixels: &ArtPixels, opacity: f32) {
+    let inner_x = area.x + 1;
+    let inner_y = area.y + 1;
+    let inner_w = area.width.saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2);
+    let art_w = ART_COLS.min(inner_w);
+    let art_h = ART_ROWS.min(inner_h);
+    if art_w == 0 || art_h == 0 {
+        return;
     }
-    if let Some(ref album) = meta.album {
-        meta_parts.push(album);
-    }
-    if let Some(ref date) = meta.date {
-        meta_parts.push(date);
-    }
-    if let Some(ref genre) = meta.genre {
-        meta_parts.push(genre);
-    }
-    let has_meta = !meta_parts.is_empty();
-    let has_art = album_art.is_some();
-
-    if has_art {
-        let top_split = Layout::horizontal([
-            Constraint::Length(ART_COLS + 2), // art + border
-            Constraint::Min(0),
-        ])
-        .split(frame.area());
-
-        let np_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(" Now Playing ");
-        let np_inner = np_block.inner(top_split[0]);
-        frame.render_widget(np_block, top_split[0]);
-
-        // Status + title at the top
-        let status = if paused { "Paused" } else { "Playing" };
-        let mut status_spans = vec![Span::styled(
-            format!(" {status} "),
-            Style::default().fg(Color::Black).bg(Color::Cyan),
-        )];
-        if let Some((cur, total)) = track_pos {
-            status_spans.push(Span::styled(
-                format!("  {cur}/{total}"),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-        let status_line = Line::from(status_spans);
-        let title_line =
-            Line::from(Span::styled(file_name, Style::default().fg(Color::White)));
-
-        let status_rect = Rect::new(np_inner.x, np_inner.y, np_inner.width, 1);
-        frame.render_widget(Paragraph::new(status_line), status_rect);
-        let title_rect = Rect::new(np_inner.x, np_inner.y + 1, np_inner.width, 1);
-        frame.render_widget(Paragraph::new(title_line), title_rect);
-
-        // Album art below (after 1 blank line)
-        let art_y = np_inner.y + 3;
-        if let Some(pixels) = album_art {
-            let art_rect = Rect::new(
-                np_inner.x,
-                art_y,
-                ART_COLS.min(np_inner.width),
-                ART_ROWS.min(np_inner.height.saturating_sub(3)),
-            );
-            frame.render_widget(AlbumArtWidget::new(pixels), art_rect);
-        }
-
-        // Tags below art
-        let tags_y = art_y + ART_ROWS + 1;
-        if has_meta && tags_y < np_inner.y + np_inner.height {
-            let tags_rect = Rect::new(
-                np_inner.x,
-                tags_y,
-                np_inner.width,
-                np_inner.y + np_inner.height - tags_y,
-            );
-            let mut tag_lines: Vec<Line> = Vec::new();
-            if let Some(ref artist) = meta.artist {
-                tag_lines.push(Line::from(Span::styled(
-                    artist.as_str(),
-                    Style::default().fg(Color::White),
-                )));
-            }
-            if let Some(ref album) = meta.album {
-                tag_lines.push(Line::from(Span::styled(
-                    album.as_str(),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            if let Some(ref date) = meta.date {
-                tag_lines.push(Line::from(Span::styled(
-                    date.as_str(),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            if let Some(ref genre) = meta.genre {
-                tag_lines.push(Line::from(Span::styled(
-                    genre.as_str(),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            frame.render_widget(Paragraph::new(tag_lines), tags_rect);
-        }
-
-        NowPlayingLayout {
-            region: top_split[0],
-            main_area: top_split[1],
-            row_height: 0,
-        }
-    } else {
-        let row_height: u16 = if has_meta { 4 } else { 3 };
-
-        NowPlayingLayout {
-            region: Rect::default(), // set later by caller after layout split
-            main_area: frame.area(),
-            row_height,
-        }
-    }
+    let art_rect = Rect::new(inner_x, inner_y, art_w, art_h);
+    frame.render_widget(AlbumArtWidget::new(pixels, opacity), art_rect);
 }
 
 /// Draw the compact horizontal Now Playing bar (used when there's no album art).

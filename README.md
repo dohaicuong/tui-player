@@ -7,7 +7,7 @@ A terminal music player written in Rust.
 - Plays MP3, FLAC, OGG, WAV, and AAC files
 - 3 visualizer modes: oscilloscope, vectorscope, spectroscope (braille Unicode)
 - Lyrics fetching from lyrics.ovh and Genius
-- Album art display (half-block rendering)
+- Album art overlay on visualizer (semi-transparent half-block rendering)
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll, hover tooltips on seek/volume/EQ)
 - File browser with tree navigation (press `f`) — accepts directories as input, fuzzy search with `/`
 - Shuffle and repeat modes (Off / All / One)
