@@ -67,6 +67,8 @@ fn build_control_spans(
         ]);
     }
     spans.extend([
+        Span::styled(" i ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::raw(" Track Info  "),
         Span::styled(" x ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" Clear Cache  "),
         Span::styled(" q ", Style::default().fg(Color::Black).bg(Color::Yellow)),

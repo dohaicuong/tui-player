@@ -67,6 +67,7 @@ tui-player <music-file-or-directory>
 | `s` | Toggle shuffle |
 | `r` | Cycle repeat (Off / All / One) |
 | `c` | Cycle crossfade (Off / 2s / 5s / 8s) |
+| `i` | Show track info popup |
 | `x` | Clear lyrics/art cache and re-fetch |
 | `j` / `k` | Scroll lyrics |
 | `q` / `Ctrl+C` | Quit |

@@ -242,6 +242,7 @@ struct QueuedTrack {
     meta: TrackMeta,
     duration: Option<Duration>,
     channels: u16,
+    sample_rate: u32,
     normalize_gain: f32,
     finished: Arc<AtomicBool>,
 }
@@ -253,6 +254,7 @@ struct CrossfadeState {
     meta: TrackMeta,
     duration: Option<Duration>,
     channels: u16,
+    sample_rate: u32,
     normalize_gain: f32,
     finished: Arc<AtomicBool>,
 }
@@ -329,6 +331,7 @@ struct App {
     total_duration: Option<Duration>,
     seek_base: Duration,
     channels: u16,
+    sample_rate: u32,
     pipe_ready: Arc<AtomicBool>,
     samples: SampleBuf,
     stream: OutputStream,
@@ -356,6 +359,7 @@ struct App {
     normalize_gain: f32,
     current_finished: Arc<AtomicBool>,
     queued_track: Option<QueuedTrack>,
+    info_open: bool,
     eq_open: bool,
     eq_params: eq::SharedEqParams,
     eq_selected_band: usize,
@@ -688,6 +692,7 @@ impl App {
             total_duration,
             seek_base: Duration::ZERO,
             channels,
+            sample_rate,
             pipe_ready,
             samples,
             stream,
@@ -715,6 +720,7 @@ impl App {
             normalize_gain,
             current_finished,
             queued_track: None,
+            info_open: false,
             eq_open: false,
             eq_params,
             eq_selected_band: 0,
@@ -762,6 +768,7 @@ impl App {
             total_duration: None,
             seek_base: Duration::ZERO,
             channels: 2,
+            sample_rate: 44100,
             pipe_ready,
             samples,
             stream,
@@ -789,6 +796,7 @@ impl App {
             normalize_gain: 1.0,
             current_finished: Arc::new(AtomicBool::new(false)),
             queued_track: None,
+            info_open: false,
             eq_open: false,
             eq_params,
             eq_selected_band: 0,
@@ -831,6 +839,7 @@ impl App {
         let source = Decoder::new(buf).expect("failed to decode audio file");
         self.channels = source.channels();
         let sample_rate = source.sample_rate();
+        self.sample_rate = sample_rate;
         self.current_finished = Arc::new(AtomicBool::new(false));
         let piped = PipedSource::new(
             source,
@@ -1098,6 +1107,7 @@ impl App {
             meta: probe.meta,
             duration: probe.duration,
             channels,
+            sample_rate,
             normalize_gain,
             finished,
         });
@@ -1114,6 +1124,7 @@ impl App {
         self.total_duration = queued.duration;
         self.seek_base = Duration::ZERO;
         self.channels = queued.channels;
+        self.sample_rate = queued.sample_rate;
         self.normalize_gain = queued.normalize_gain;
         self.current_finished = queued.finished;
 
@@ -1202,6 +1213,7 @@ impl App {
             meta: probe.meta,
             duration: probe.duration,
             channels,
+            sample_rate,
             normalize_gain,
             finished,
         });
@@ -1222,6 +1234,7 @@ impl App {
         self.total_duration = cf.duration;
         self.seek_base = Duration::ZERO;
         self.channels = cf.channels;
+        self.sample_rate = cf.sample_rate;
         self.normalize_gain = cf.normalize_gain;
         self.current_finished = cf.finished;
         self.queued_track = None;
@@ -1515,6 +1528,13 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             }
                             _ => {}
                         }
+                    } else if app.info_open {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('i') => {
+                                app.info_open = false;
+                            }
+                            _ => {}
+                        }
                     } else {
                         match key.code {
                             KeyCode::Char(' ') => {
@@ -1627,6 +1647,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                                         app.lyrics_loading = true;
                                     }
                                 }
+                            }
+                            KeyCode::Char('i') => {
+                                app.info_open = !app.info_open;
                             }
                             KeyCode::Char('c') => {
                                 let idx = CROSSFADE_OPTIONS
@@ -1843,6 +1866,118 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn draw_track_info(frame: &mut Frame, app: &App) {
+    use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+
+    let mut lines: Vec<ratatui::text::Line> = Vec::new();
+
+    let label = |key: &str, val: &str| -> ratatui::text::Line<'static> {
+        ratatui::text::Line::from(vec![
+            Span::styled(format!("{key}: "), Style::default().fg(Color::Yellow)),
+            Span::styled(val.to_string(), Style::default().fg(Color::White)),
+        ])
+    };
+
+    // File path
+    lines.push(label("File", &app.file_path.display().to_string()));
+
+    // File size
+    if let Ok(metadata) = fs::metadata(&app.file_path) {
+        let bytes = metadata.len();
+        let size_str = if bytes >= 1_048_576 {
+            format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+        } else {
+            format!("{:.0} KB", bytes as f64 / 1024.0)
+        };
+        lines.push(label("Size", &size_str));
+    }
+
+    // Duration
+    if let Some(d) = app.total_duration {
+        let secs = d.as_secs();
+        let mins = secs / 60;
+        let s = secs % 60;
+        lines.push(label("Duration", &format!("{mins}:{s:02}")));
+    }
+
+    // Codec (derive from extension)
+    if let Some(ext) = app.file_path.extension().and_then(|e| e.to_str()) {
+        let lower = ext.to_lowercase();
+        let codec = match lower.as_str() {
+            "mp3" => "MP3 (MPEG Layer 3)",
+            "flac" => "FLAC (Free Lossless Audio Codec)",
+            "ogg" => "OGG Vorbis",
+            "wav" => "WAV (PCM)",
+            "aac" | "m4a" => "AAC (Advanced Audio Coding)",
+            _ => &lower,
+        };
+        lines.push(label("Codec", codec));
+    }
+
+    // Sample rate
+    lines.push(label("Sample Rate", &format!("{} Hz", app.sample_rate)));
+
+    // Channels
+    let ch_str = match app.channels {
+        1 => "Mono".to_string(),
+        2 => "Stereo".to_string(),
+        n => format!("{n} channels"),
+    };
+    lines.push(label("Channels", &ch_str));
+
+    // Bitrate (estimate from file size and duration)
+    if let (Ok(metadata), Some(d)) = (fs::metadata(&app.file_path), app.total_duration) {
+        if d.as_secs_f64() > 0.0 {
+            let kbps = (metadata.len() as f64 * 8.0 / d.as_secs_f64() / 1000.0).round() as u32;
+            lines.push(label("Bitrate", &format!("{kbps} kbps")));
+        }
+    }
+
+    // ReplayGain
+    if app.normalize_gain != 1.0 {
+        let db = 20.0 * app.normalize_gain.log10();
+        lines.push(label("ReplayGain", &format!("{db:+.1} dB")));
+    }
+
+    // Tag metadata
+    lines.push(ratatui::text::Line::raw(""));
+    if let Some(ref t) = app.meta.title {
+        lines.push(label("Title", t));
+    }
+    if let Some(ref a) = app.meta.artist {
+        lines.push(label("Artist", a));
+    }
+    if let Some(ref a) = app.meta.album {
+        lines.push(label("Album", a));
+    }
+    if let Some(ref d) = app.meta.date {
+        lines.push(label("Date", d));
+    }
+    if let Some(ref g) = app.meta.genre {
+        lines.push(label("Genre", g));
+    }
+
+    let content_h = lines.len() as u16 + 2; // +2 for borders
+    let area = frame.area();
+    let popup_w = 60.min(area.width.saturating_sub(4));
+    let popup_h = content_h.min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(popup_w)) / 2;
+    let y = (area.height.saturating_sub(popup_h)) / 2;
+    let popup_rect = Rect::new(x, y, popup_w, popup_h);
+
+    frame.render_widget(Clear, popup_rect);
+    let popup = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Track Info ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+    frame.render_widget(popup, popup_rect);
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
@@ -2070,5 +2205,8 @@ fn draw(frame: &mut Frame, app: &mut App) {
     if app.eq_open {
         let params = app.eq_params.lock().unwrap();
         app.regions.eq_inner = eq::draw_eq(frame, &params, app.eq_selected_band, app.eq_hover_band);
+    }
+    if app.info_open && app.track_loaded {
+        draw_track_info(frame, app);
     }
 }
