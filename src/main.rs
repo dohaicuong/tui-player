@@ -17,7 +17,7 @@ use symphonia::core::{
     probe::Hint,
 };
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MediaKeyCode, MouseButton, MouseEventKind};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style},
@@ -1306,6 +1306,16 @@ fn main() -> io::Result<()> {
     }
 
     crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+    let enhanced_keyboard = crossterm::terminal::supports_keyboard_enhancement()
+        .unwrap_or(false);
+    if enhanced_keyboard {
+        crossterm::execute!(
+            io::stdout(),
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )?;
+    }
     let mut terminal = ratatui::init();
     let mut app = if path.is_dir() {
         App::new_idle(path)
@@ -1320,6 +1330,12 @@ fn main() -> io::Result<()> {
     app.queue_next_track();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
+    if enhanced_keyboard {
+        crossterm::execute!(
+            io::stdout(),
+            crossterm::event::PopKeyboardEnhancementFlags
+        )?;
+    }
     crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
     if scope_tui_installed {
         remove_pipe();
@@ -1381,6 +1397,57 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL))
                     {
                         break;
+                    }
+
+                    // Media keys work globally in all modes
+                    match key.code {
+                        KeyCode::Media(MediaKeyCode::Play) => {
+                            if app.track_loaded && app.paused {
+                                app.toggle_pause();
+                            }
+                        }
+                        KeyCode::Media(MediaKeyCode::Pause) => {
+                            if app.track_loaded && !app.paused {
+                                app.toggle_pause();
+                            }
+                        }
+                        KeyCode::Media(MediaKeyCode::PlayPause) => {
+                            if app.track_loaded {
+                                app.toggle_pause();
+                            }
+                        }
+                        KeyCode::Media(MediaKeyCode::Stop) => {
+                            if app.track_loaded {
+                                if !app.paused {
+                                    app.toggle_pause();
+                                }
+                                app.seek_to(Duration::ZERO);
+                            }
+                        }
+                        KeyCode::Media(MediaKeyCode::TrackNext) => {
+                            if app.track_loaded {
+                                app.next_track();
+                            }
+                        }
+                        KeyCode::Media(MediaKeyCode::TrackPrevious) => {
+                            if app.track_loaded {
+                                app.prev_track();
+                            }
+                        }
+                        KeyCode::Media(MediaKeyCode::RaiseVolume) => {
+                            app.volume_up();
+                        }
+                        KeyCode::Media(MediaKeyCode::LowerVolume) => {
+                            app.volume_down();
+                        }
+                        KeyCode::Media(MediaKeyCode::MuteVolume) => {
+                            if app.volume > 0.0 {
+                                app.set_volume(0.0);
+                            } else {
+                                app.set_volume(1.0);
+                            }
+                        }
+                        _ => {}
                     }
 
                     if app.browser_open {

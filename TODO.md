@@ -1,7 +1,6 @@
 # TODO
 
 - [ ] Clickable controls bar
-- [ ] Media key support (hardware play/pause/next/prev)
 - [ ] Playlist queue (manually reorder tracks)
 - [ ] Sleep timer
 - [ ] Global hotkeys (control from outside the terminal)

@@ -18,6 +18,7 @@ A terminal music player written in Rust.
 - Waveform preview on seek bar (progressive background scan, block character rendering)
 - Lyrics and album art caching (`~/.config/tui-player/cache/`) — instant load on repeat plays
 - Responsive layout (controls and metadata wrap to multiple lines on narrow terminals)
+- Media key support (play/pause, next/prev, volume, stop, mute — requires terminal with kitty keyboard protocol)
 - Persistent settings (volume, visualizer mode, lyrics visibility, EQ, crossfade)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
 
