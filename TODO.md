@@ -1,10 +1,13 @@
 # TODO
 
-- [x] Shuffle / repeat modes (shuffle queue, repeat-one, repeat-all)
-- [x] Previous/next track keys (skip forward/back without opening browser)
-- [x] Track position indicator (show "3/15" in now playing bar)
 - [ ] Clickable controls bar
-- [x] Search in file browser (type to filter files)
-- [x] Gapless playback (pre-buffer next track to avoid silence)
 - [ ] Media key support (hardware play/pause/next/prev)
-- [x] ReplayGain / volume normalization (even out loudness between tracks)
+- [x] Seek bar with time on hover
+- [x] Volume bar with value on hover
+- [x] EQ band hover tooltip, click-to-select, scroll-to-adjust
+- [ ] Playlist queue (manually reorder tracks)
+- [ ] Album art in compact bar (small inline art)
+- [ ] Waveform preview (pre-scan track for seek bar visualization)
+- [ ] Crossfade between tracks
+- [ ] Sleep timer
+- [ ] Global hotkeys (control from outside the terminal)

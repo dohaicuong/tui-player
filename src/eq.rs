@@ -247,7 +247,7 @@ fn format_freq(f: f32) -> String {
     }
 }
 
-pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize) {
+pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize, hover_band: Option<usize>) -> Rect {
     let area = frame.area();
     // 32 bars × 2 chars = 64, + 1 leading + 4 dB label + 2 border = 71
     let popup_width = 74u16.min(area.width);
@@ -284,7 +284,7 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize) {
     frame.render_widget(block, popup_area);
 
     if inner.height < 6 || inner.width < 40 {
-        return;
+        return inner;
     }
 
     let mut lines: Vec<Line> = Vec::new();
@@ -311,7 +311,7 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize) {
     // Bar area
     let bar_height = inner.height.saturating_sub(5) as usize;
     if bar_height == 0 {
-        return;
+        return inner;
     }
     let zero_row = bar_height / 2;
 
@@ -402,4 +402,34 @@ pub fn draw_eq(frame: &mut Frame, params: &EqParams, selected_band: usize) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+
+    // Hover tooltip on top border
+    if let Some(hb) = hover_band {
+        if hb < NUM_BANDS {
+            let freq = format_freq(BAND_FREQS[hb]);
+            let gain = params.gains[hb];
+            let gain_str = if gain >= 0.0 {
+                format!("+{:.0}", gain)
+            } else {
+                format!("{:.0}", gain)
+            };
+            let label = format!(" {} Hz  {} dB ", freq, gain_str);
+            let label_len = label.len() as u16;
+            let band_x = inner.x + 1 + hb as u16 * 2;
+            let start_x = band_x
+                .saturating_sub(label_len / 2)
+                .max(popup_area.x)
+                .min(popup_area.x + popup_area.width.saturating_sub(label_len));
+            let hover_rect = Rect::new(start_x, popup_area.y, label_len, 1);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    label,
+                    Style::default().fg(Color::Yellow),
+                )),
+                hover_rect,
+            );
+        }
+    }
+
+    inner
 }

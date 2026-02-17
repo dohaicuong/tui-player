@@ -8,7 +8,7 @@ A terminal music player written in Rust.
 - 3 visualizer modes: oscilloscope, vectorscope, spectroscope (braille Unicode)
 - Lyrics fetching from lyrics.ovh and Genius
 - Album art display (half-block rendering)
-- Mouse support (click to seek, adjust volume, toggle lyrics, scroll)
+- Mouse support (click to seek, adjust volume, toggle lyrics, scroll, hover tooltips on seek/volume/EQ)
 - File browser with tree navigation (press `f`) — accepts directories as input, fuzzy search with `/`
 - Shuffle and repeat modes (Off / All / One)
 - Gapless playback with pre-buffered next track
@@ -76,6 +76,8 @@ tui-player <music-file-or-directory>
 | `0` | Reset to flat |
 | `s` | Toggle EQ on/off |
 | `Esc` / `e` | Close equalizer |
+| Mouse click | Select band |
+| Scroll wheel | Adjust hovered band ±1 dB |
 
 ## Configuration
 

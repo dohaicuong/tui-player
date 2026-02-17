@@ -193,6 +193,7 @@ struct LayoutRegions {
     visualizer: Rect,
     lyrics: Rect,
     lyrics_title: Rect,
+    eq_inner: Rect,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -287,6 +288,9 @@ struct App {
     repeat_mode: RepeatMode,
     shuffle: bool,
     shuffle_order: Vec<usize>,
+    progress_hover_col: Option<u16>,
+    volume_hover_col: Option<u16>,
+    eq_hover_band: Option<usize>,
 }
 
 impl App {
@@ -614,6 +618,9 @@ impl App {
             repeat_mode: load_repeat_mode(),
             shuffle: load_shuffle(),
             shuffle_order: Vec::new(),
+            progress_hover_col: None,
+            volume_hover_col: None,
+            eq_hover_band: None,
         }
     }
 
@@ -676,6 +683,9 @@ impl App {
             repeat_mode: load_repeat_mode(),
             shuffle: load_shuffle(),
             shuffle_order: Vec::new(),
+            progress_hover_col: None,
+            volume_hover_col: None,
+            eq_hover_band: None,
         }
     }
 
@@ -1343,6 +1353,70 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                         }
                     }
                 }
+                Event::Mouse(mouse) if app.eq_open => {
+                    let col = mouse.column;
+                    let row = mouse.row;
+                    let inner = app.regions.eq_inner;
+                    let band_start_x = inner.x + 1;
+                    let band_end_x = band_start_x + eq::NUM_BANDS as u16 * 2;
+                    match mouse.kind {
+                        MouseEventKind::Moved => {
+                            if col >= band_start_x
+                                && col < band_end_x
+                                && row >= inner.y
+                                && row < inner.y + inner.height
+                            {
+                                let band = ((col - band_start_x) / 2) as usize;
+                                if band < eq::NUM_BANDS {
+                                    app.eq_hover_band = Some(band);
+                                } else {
+                                    app.eq_hover_band = None;
+                                }
+                            } else {
+                                app.eq_hover_band = None;
+                            }
+                        }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            if col >= band_start_x && col < band_end_x {
+                                let band = ((col - band_start_x) / 2) as usize;
+                                if band < eq::NUM_BANDS {
+                                    app.eq_selected_band = band;
+                                }
+                            }
+                        }
+                        MouseEventKind::ScrollUp => {
+                            let band = if col >= band_start_x && col < band_end_x {
+                                ((col - band_start_x) / 2) as usize
+                            } else {
+                                app.eq_selected_band
+                            };
+                            if band < eq::NUM_BANDS {
+                                if let Ok(mut params) = app.eq_params.lock() {
+                                    let g = &mut params.gains[band];
+                                    *g = (*g + 1.0).min(12.0);
+                                    eq::save_eq(&params);
+                                }
+                                app.eq_selected_band = band;
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            let band = if col >= band_start_x && col < band_end_x {
+                                ((col - band_start_x) / 2) as usize
+                            } else {
+                                app.eq_selected_band
+                            };
+                            if band < eq::NUM_BANDS {
+                                if let Ok(mut params) = app.eq_params.lock() {
+                                    let g = &mut params.gains[band];
+                                    *g = (*g - 1.0).max(-12.0);
+                                    eq::save_eq(&params);
+                                }
+                                app.eq_selected_band = band;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 Event::Mouse(mouse) if !app.browser_open && !app.eq_open => {
                     let col = mouse.column;
                     let row = mouse.row;
@@ -1383,6 +1457,18 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             } else if hit(app.regions.visualizer, col, row) {
                                 app.vis_mode = app.vis_mode.next();
                                 save_vis_mode(app.vis_mode);
+                            }
+                        }
+                        MouseEventKind::Moved => {
+                            if hit(app.regions.progress, col, row) {
+                                app.progress_hover_col = Some(col);
+                            } else {
+                                app.progress_hover_col = None;
+                            }
+                            if hit(app.regions.volume, col, row) {
+                                app.volume_hover_col = Some(col);
+                            } else {
+                                app.volume_hover_col = None;
                             }
                         }
                         MouseEventKind::ScrollUp => {
@@ -1537,7 +1623,59 @@ fn draw(frame: &mut Frame, app: &mut App) {
         }
 
         progress::draw_progress(frame, chunks[2], app.position(), app.total_duration);
+
+        // Hover time tooltip on progress bar top border
+        if let (Some(hover_col), Some(total)) = (app.progress_hover_col, app.total_duration) {
+            let prog = chunks[2];
+            let inner_x = hover_col.saturating_sub(prog.x + 1);
+            let inner_w = prog.width.saturating_sub(2);
+            if inner_w > 0 && !total.is_zero() {
+                let frac = (inner_x as f64 / inner_w as f64).clamp(0.0, 1.0);
+                let hover_secs = (frac * total.as_secs_f64()) as u64;
+                let label = format!(" {}:{:02} ", hover_secs / 60, hover_secs % 60);
+                let label_len = label.len() as u16;
+                let start_x = hover_col
+                    .saturating_sub(label_len / 2)
+                    .max(prog.x)
+                    .min(prog.x + prog.width.saturating_sub(label_len));
+                let hover_rect = Rect::new(start_x, prog.y, label_len, 1);
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        label,
+                        Style::default().fg(Color::Yellow),
+                    )),
+                    hover_rect,
+                );
+            }
+        }
+
         volume::draw_volume(frame, chunks[3], app.volume);
+
+        // Hover volume tooltip on volume bar top border
+        if let Some(hover_col) = app.volume_hover_col {
+            let vol = chunks[3];
+            let inner_x = hover_col.saturating_sub(vol.x + 1);
+            let inner_w = vol.width.saturating_sub(2);
+            if inner_w > 0 {
+                let frac = (inner_x as f64 / inner_w as f64).clamp(0.0, 1.0);
+                let hover_pct = (frac * 200.0).round() as u16;
+                let label = format!(" {}% ", hover_pct);
+                let label_len = label.len() as u16;
+                let start_x = hover_col
+                    .saturating_sub(label_len / 2)
+                    .max(vol.x)
+                    .min(vol.x + vol.width.saturating_sub(label_len));
+                let hover_rect = Rect::new(start_x, vol.y, label_len, 1);
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        label,
+                        Style::default().fg(Color::Yellow),
+                    )),
+                    hover_rect,
+                );
+            }
+        }
+
         controls::draw_controls(
             frame,
             chunks[4],
@@ -1566,6 +1704,6 @@ fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.eq_open {
         let params = app.eq_params.lock().unwrap();
-        eq::draw_eq(frame, &params, app.eq_selected_band);
+        app.regions.eq_inner = eq::draw_eq(frame, &params, app.eq_selected_band, app.eq_hover_band);
     }
 }
