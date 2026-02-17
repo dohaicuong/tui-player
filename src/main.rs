@@ -651,6 +651,23 @@ impl App {
         save_volume(self.volume);
     }
 
+    fn next_track(&mut self) {
+        let files = file_browser::collect_audio_files(&self.browser_items);
+        let idx = files.iter().position(|f| f == &self.file_path);
+        if let Some(next) = idx.and_then(|i| files.get(i + 1)).cloned() {
+            self.switch_track(&next);
+        }
+    }
+
+    fn prev_track(&mut self) {
+        let files = file_browser::collect_audio_files(&self.browser_items);
+        let idx = files.iter().position(|f| f == &self.file_path);
+        if let Some(prev) = idx.and_then(|i| i.checked_sub(1)).and_then(|i| files.get(i)).cloned()
+        {
+            self.switch_track(&prev);
+        }
+    }
+
     fn is_finished(&self) -> bool {
         self.sink.empty()
     }
@@ -882,6 +899,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             }
                             KeyCode::Char('e') => {
                                 app.eq_open = true;
+                            }
+                            KeyCode::Char('n') => {
+                                if app.track_loaded {
+                                    app.next_track();
+                                }
+                            }
+                            KeyCode::Char('N') => {
+                                if app.track_loaded {
+                                    app.prev_track();
+                                }
                             }
                             _ => {}
                         }

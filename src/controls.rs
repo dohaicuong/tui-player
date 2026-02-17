@@ -31,6 +31,8 @@ pub fn draw_controls(frame: &mut Frame, area: Rect, show_visualizer: bool, has_b
     ]);
     if has_browser {
         help_spans.extend([
+            Span::styled(" n/N ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" Next/Prev  "),
             Span::styled(" f ", Style::default().fg(Color::Black).bg(Color::Yellow)),
             Span::raw(" Files  "),
         ]);

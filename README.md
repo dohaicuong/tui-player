@@ -56,6 +56,8 @@ tui-player <music-file-or-directory>
 | `l` | Toggle lyrics panel |
 | `f` | Open file browser |
 | `e` | Open equalizer |
+| `n` | Next track |
+| `N` | Previous track |
 | `j` / `k` | Scroll lyrics |
 | `q` / `Ctrl+C` | Quit |
 
