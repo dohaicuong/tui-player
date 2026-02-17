@@ -59,6 +59,7 @@ struct PipedSource<S> {
     channel_idx: u16,
     channels: u16,
     update_counter: u32,
+    finished: Arc<AtomicBool>,
 }
 
 impl<S> PipedSource<S>
@@ -72,6 +73,7 @@ where
         eq_params: eq::SharedEqParams,
         channels: u16,
         sample_rate: u32,
+        finished: Arc<AtomicBool>,
     ) -> Self {
         let eq_filters = {
             let params = eq_params.lock().unwrap();
@@ -87,6 +89,7 @@ where
             channel_idx: 0,
             channels,
             update_counter: 0,
+            finished,
         }
     }
 
@@ -110,7 +113,13 @@ where
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        let raw = self.inner.next()?;
+        let raw = match self.inner.next() {
+            Some(v) => v,
+            None => {
+                self.finished.store(true, Ordering::Relaxed);
+                return None;
+            }
+        };
 
         // Periodically check for EQ parameter changes (every 4096 samples)
         self.update_counter += 1;
@@ -182,6 +191,15 @@ struct LayoutRegions {
     lyrics_title: Rect,
 }
 
+struct QueuedTrack {
+    path: PathBuf,
+    file_name: String,
+    meta: TrackMeta,
+    duration: Option<Duration>,
+    channels: u16,
+    finished: Arc<AtomicBool>,
+}
+
 struct App {
     file_path: PathBuf,
     file_name: String,
@@ -215,6 +233,8 @@ struct App {
     browser_filtered: Vec<PathBuf>,
     browser_filter_idx: usize,
     track_loaded: bool,
+    current_finished: Arc<AtomicBool>,
+    queued_track: Option<QueuedTrack>,
     eq_open: bool,
     eq_params: eq::SharedEqParams,
     eq_selected_band: usize,
@@ -404,6 +424,7 @@ impl App {
         let source = Decoder::new(buf).expect("failed to decode audio file");
         let channels = source.channels();
         let sample_rate = source.sample_rate();
+        let current_finished = Arc::new(AtomicBool::new(false));
         let piped = PipedSource::new(
             source,
             Arc::clone(&pipe_ready),
@@ -411,6 +432,7 @@ impl App {
             Arc::clone(&eq_params),
             channels,
             sample_rate,
+            Arc::clone(&current_finished),
         );
         sink.append(piped);
 
@@ -466,6 +488,8 @@ impl App {
             browser_filtered: Vec::new(),
             browser_filter_idx: 0,
             track_loaded: true,
+            current_finished,
+            queued_track: None,
             eq_open: false,
             eq_params,
             eq_selected_band: 0,
@@ -522,6 +546,8 @@ impl App {
             browser_filtered: Vec::new(),
             browser_filter_idx: 0,
             track_loaded: false,
+            current_finished: Arc::new(AtomicBool::new(false)),
+            queued_track: None,
             eq_open: false,
             eq_params,
             eq_selected_band: 0,
@@ -530,6 +556,7 @@ impl App {
 
     fn switch_track(&mut self, path: &PathBuf) {
         self.sink.stop();
+        self.queued_track = None;
 
         let probe = probe_file(path);
         self.file_name = probe.meta.title.clone().unwrap_or_else(|| {
@@ -550,6 +577,7 @@ impl App {
         let source = Decoder::new(buf).expect("failed to decode audio file");
         self.channels = source.channels();
         let sample_rate = source.sample_rate();
+        self.current_finished = Arc::new(AtomicBool::new(false));
         let piped = PipedSource::new(
             source,
             Arc::clone(&self.pipe_ready),
@@ -557,6 +585,7 @@ impl App {
             Arc::clone(&self.eq_params),
             self.channels,
             sample_rate,
+            Arc::clone(&self.current_finished),
         );
         new_sink.append(piped);
         self.sink = new_sink;
@@ -588,6 +617,7 @@ impl App {
 
         self.meta = probe.meta;
         self.track_loaded = true;
+        self.queue_next_track();
     }
 
     fn toggle_pause(&mut self) {
@@ -625,6 +655,8 @@ impl App {
         let clamped = self.total_duration.map(|t| target.min(t)).unwrap_or(target);
 
         self.sink.stop();
+        self.queued_track = None;
+
         let new_sink = Sink::connect_new(self.stream.mixer());
         new_sink.set_volume(self.volume);
 
@@ -633,6 +665,7 @@ impl App {
         let mut source = Decoder::new(buf).expect("failed to decode audio file");
         let sample_rate = source.sample_rate();
         let _ = source.try_seek(clamped);
+        self.current_finished = Arc::new(AtomicBool::new(false));
         let piped = PipedSource::new(
             source,
             Arc::clone(&self.pipe_ready),
@@ -640,6 +673,7 @@ impl App {
             Arc::clone(&self.eq_params),
             self.channels,
             sample_rate,
+            Arc::clone(&self.current_finished),
         );
         new_sink.append(piped);
 
@@ -653,6 +687,8 @@ impl App {
         if let Ok(mut sbuf) = self.samples.lock() {
             sbuf.clear();
         }
+
+        self.queue_next_track();
     }
 
     fn set_volume(&mut self, vol: f32) {
@@ -678,6 +714,101 @@ impl App {
         {
             self.switch_track(&prev);
         }
+    }
+
+    fn queue_next_track(&mut self) {
+        if self.queued_track.is_some() {
+            return;
+        }
+        let files = file_browser::collect_audio_files(&self.browser_items);
+        let next_path = match files.iter().position(|f| f == &self.file_path) {
+            Some(i) => match files.get(i + 1) {
+                Some(p) => p.clone(),
+                None => return,
+            },
+            None => return,
+        };
+
+        let probe = probe_file(&next_path);
+        let file_name = probe.meta.title.clone().unwrap_or_else(|| {
+            next_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Unknown".into())
+        });
+
+        let file = match fs::File::open(&next_path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let buf = io::BufReader::new(file);
+        let source = match Decoder::new(buf) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let channels = source.channels();
+        let sample_rate = source.sample_rate();
+        let finished = Arc::new(AtomicBool::new(false));
+        let piped = PipedSource::new(
+            source,
+            Arc::clone(&self.pipe_ready),
+            Arc::clone(&self.samples),
+            Arc::clone(&self.eq_params),
+            channels,
+            sample_rate,
+            Arc::clone(&finished),
+        );
+        self.sink.append(piped);
+
+        self.queued_track = Some(QueuedTrack {
+            path: next_path,
+            file_name,
+            meta: probe.meta,
+            duration: probe.duration,
+            channels,
+            finished,
+        });
+    }
+
+    fn advance_to_queued(&mut self) {
+        let queued = match self.queued_track.take() {
+            Some(q) => q,
+            None => return,
+        };
+
+        self.file_path = queued.path;
+        self.file_name = queued.file_name;
+        self.total_duration = queued.duration;
+        self.seek_base = Duration::ZERO;
+        self.channels = queued.channels;
+        self.current_finished = queued.finished;
+
+        // Reset lyrics and art
+        self.lyrics = None;
+        self.lyrics_scroll = 0;
+        self.lyrics_loading = false;
+        self.lyrics_url.clear();
+        self.lyrics_rx = None;
+        self.album_art = None;
+        self.art_rx = None;
+
+        // Spawn new lyrics fetchers
+        let lyrics_artist = queued.meta.artist.clone().unwrap_or_default();
+        let lyrics_title = queued.meta.title.clone().unwrap_or_else(|| {
+            self.file_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+        if !lyrics_title.is_empty() {
+            self.lyrics_rx = Some(spawn_lyrics_fetchers(lyrics_artist, lyrics_title));
+            self.lyrics_loading = true;
+        }
+
+        self.meta = queued.meta;
+
+        // Queue the next-next track
+        self.queue_next_track();
     }
 
     fn is_finished(&self) -> bool {
@@ -726,6 +857,7 @@ fn main() -> io::Result<()> {
         App::new_with_track(&path, root_dir)
     };
     app.show_visualizer = scope_tui_installed;
+    app.queue_next_track();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
     crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
@@ -1053,16 +1185,17 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             }
         }
 
+        // Gapless transition: current source finished, queued is now playing
+        if app.track_loaded
+            && app.current_finished.load(Ordering::Relaxed)
+            && app.queued_track.is_some()
+        {
+            app.advance_to_queued();
+        }
+
+        // All sources exhausted (no queued track)
         if app.track_loaded && app.is_finished() && !app.paused {
-            // Try to advance to the next track in the directory
-            let next = {
-                let files = file_browser::collect_audio_files(&app.browser_items);
-                let current_idx = files.iter().position(|f| f == &app.file_path);
-                current_idx.and_then(|i| files.get(i + 1).cloned())
-            };
-            if let Some(next_path) = next {
-                app.switch_track(&next_path);
-            } else if app.root_dir.is_some() {
+            if app.root_dir.is_some() {
                 app.browser_open = true;
                 app.track_loaded = false;
             } else {
