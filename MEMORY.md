@@ -13,6 +13,7 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - **image** 0.25 — album art resizing
 - **ureq** 3 — HTTP client (lyrics/art fetching)
 - **serde_json** 1 — JSON parsing
+- **biquad** 0.5 — biquad filters for 32-band graphic EQ
 - **tui-tree-widget** 0.24 — file browser tree widget
 - **libc** 0.2 — named pipe creation
 
@@ -25,6 +26,7 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - `src/gauge.rs` — RoundedGauge widget (shared by progress and volume)
 - `src/progress.rs` — draw_progress(), format_duration()
 - `src/volume.rs` — draw_volume()
+- `src/eq.rs` — EqParams, EqFilters, SharedEqParams, 32-band frequencies/presets, draw_eq() overlay, load_eq()/save_eq()
 - `src/controls.rs` — draw_controls(), draw_scope_hint()
 
 ## Cross-Module Dependencies
@@ -40,8 +42,9 @@ TUI music player written in Rust. Multi-module architecture (~500 lines in main.
 - Album art from Genius search results (half-block rendering)
 - Mouse support (click seek, volume, play/pause, lyrics toggle, scroll)
 - File browser tree overlay (f key) — browse directories, select tracks, switch playback
-- Keyboard: Space=play/pause, arrows=seek/volume, v=vis mode, l=lyrics, f=file browser, j/k=scroll, q/Ctrl+C=quit
-- Persistent config at `~/.config/tui-player/` (volume, vis_mode, lyrics_visible)
+- 32-band graphic EQ overlay (e key) — biquad PeakingEQ filters, 11 presets, ±12 dB per band, real-time DSP
+- Keyboard: Space=play/pause, arrows=seek/volume, v=vis mode, l=lyrics, e=EQ, f=file browser, j/k=scroll, q/Ctrl+C=quit
+- Persistent config at `~/.config/tui-player/` (volume, vis_mode, lyrics_visible, eq)
 - Optional scope-tui integration via named pipe `/tmp/tui-player.pipe`
 - Adaptive layout (compact vs vertical left panel when album art loads)
 
@@ -56,3 +59,4 @@ All other crate dependencies (symphonia, rustfft, image, ureq, ratatui, crosster
 - `~/.config/tui-player/volume`
 - `~/.config/tui-player/vis_mode`
 - `~/.config/tui-player/lyrics_visible`
+- `~/.config/tui-player/eq`

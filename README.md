@@ -10,7 +10,8 @@ A terminal music player written in Rust.
 - Album art display (half-block rendering)
 - Mouse support (click to seek, adjust volume, toggle lyrics, scroll)
 - File browser with tree navigation (press `f`) — accepts directories as input
-- Persistent settings (volume, visualizer mode, lyrics visibility)
+- 32-band graphic equalizer with presets (press `e`) — real-time biquad filtering
+- Persistent settings (volume, visualizer mode, lyrics visibility, EQ)
 - Optional [scope-tui](https://github.com/alecdotninja/scope-tui) integration via named pipe
 
 ## System Dependencies
@@ -53,8 +54,20 @@ tui-player <music-file-or-directory>
 | `v` | Cycle visualizer mode |
 | `l` | Toggle lyrics panel |
 | `f` | Open file browser |
+| `e` | Open equalizer |
 | `j` / `k` | Scroll lyrics |
 | `q` / `Ctrl+C` | Quit |
+
+### Equalizer Controls (when open)
+
+| Key | Action |
+|---|---|
+| `Left` / `Right` | Select band |
+| `Up` / `Down` | Adjust gain ±1 dB |
+| `p` | Cycle preset |
+| `0` | Reset to flat |
+| `s` | Toggle EQ on/off |
+| `Esc` / `e` | Close equalizer |
 
 ## Configuration
 
@@ -63,3 +76,4 @@ Settings are persisted in `~/.config/tui-player/`:
 - `volume` — playback volume (0.0 - 2.0)
 - `vis_mode` — visualizer mode (oscilloscope, vectorscope, spectroscope)
 - `lyrics_visible` — lyrics panel visibility (true/false)
+- `eq` — equalizer state (enabled, preset, per-band gains)

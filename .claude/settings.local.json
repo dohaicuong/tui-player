@@ -25,7 +25,10 @@
       "WebFetch(domain:crates.io)",
       "WebFetch(domain:docs.rs)",
       "Bash(cargo check:*)",
-      "Bash(ldd:*)"
+      "Bash(ldd:*)",
+      "WebFetch(domain:play.google.com)",
+      "WebFetch(domain:www.quora.com)",
+      "WebFetch(domain:webaudio.github.io)"
     ]
   }
 }
