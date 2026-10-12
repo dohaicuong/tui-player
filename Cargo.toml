@@ -12,6 +12,6 @@ ratatui = "0.30.0"
 rodio = "0.21.1"
 rustfft = "6.4.1"
 serde_json = "1"
-symphonia = { version = "0.5.5", features = ["mp3", "ogg", "flac", "isomp4", "wav", "aac", "pcm", "vorbis"] }
+symphonia = { version = "0.6.0", features = ["mp3", "ogg", "flac", "isomp4", "wav", "aac", "pcm", "vorbis"] }
 tui-tree-widget = "0.24"
 ureq = "3"
